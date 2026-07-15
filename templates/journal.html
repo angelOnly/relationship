@@ -119,6 +119,14 @@
       </div>
     </form>
   </div>
+  <section class="panel ai-review-panel">
+    <div class="panel-heading compact-heading">
+      <div><span class="eyebrow">双方保存后生成</span><h2>今日 AI 反馈</h2></div>
+      <button type="button" class="button primary" id="dailyAiReview">分析今天</button>
+    </div>
+    <p class="ai-review-hint">模型会结合双方记录和相似历史，自动评价可观察行为，并只给明天一个调整重点。</p>
+    <div id="dailyAiReviewResult" class="ai-review-result empty-state">还没有生成今日复盘</div>
+  </section>
 </section>
 
 <section id="history" class="tab-panel">
@@ -132,6 +140,10 @@
 </section>
 
 <section id="weekly" class="tab-panel">
+  <div class="panel review-intro-panel">
+    <span class="eyebrow">每周只看重复模式</span>
+    <p>先保存本周小结，再点击对应周的“AI 反馈”。模型会比较本周记录和相似历史，给出一个下周目标。</p>
+  </div>
   <div class="weekly-grid" id="weeklyGrid"></div>
 </section>
 
@@ -147,7 +159,11 @@
       <label>还有哪些问题没有解决<textarea name="unresolved" rows="5"></textarea></label>
       <label>下个月只调整什么<textarea name="next_month_plan" rows="5" placeholder="最多写 1—2 个重点"></textarea></label>
     </div>
-    <div class="form-actions"><button type="submit" class="button primary">保存月度复盘</button></div>
+    <div class="form-actions">
+      <button type="button" class="button subtle" id="monthlyAiReview">生成本月 AI 反馈</button>
+      <button type="submit" class="button primary">保存月度复盘</button>
+    </div>
+    <div id="monthlyAiReviewResult" class="ai-review-result empty-state">还没有生成月度复盘</div>
   </form>
 </section>
 

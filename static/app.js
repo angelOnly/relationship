@@ -122,6 +122,12 @@ function setupForms() {
     button.addEventListener("click", () => deleteEntry(button.dataset.delete));
   });
   $("#monthlyForm").addEventListener("submit", saveMonthlySummary);
+  $("#dailyAiReview").addEventListener("click", () => {
+    generateAiReview("daily", state.date, "#dailyAiReviewResult", $("#dailyAiReview"));
+  });
+  $("#monthlyAiReview").addEventListener("click", () => {
+    generateAiReview("monthly", state.month, "#monthlyAiReviewResult", $("#monthlyAiReview"));
+  });
 }
 
 function setupToolbar() {
@@ -156,6 +162,7 @@ async function loadDay() {
   ]);
   fillForm("me", me);
   fillForm("partner", partner);
+  await loadAiReview("daily", state.date, "#dailyAiReviewResult");
   showToast(`已打开 ${state.date} 的记录`);
 }
 
@@ -278,6 +285,15 @@ async function loadWeeks() {
   $$(".week-form", grid).forEach((form) => {
     form.addEventListener("submit", saveWeek);
   });
+  $$('[data-ai-week]', grid).forEach((button) => {
+    const week = Number(button.dataset.aiWeek);
+    button.addEventListener("click", () => {
+      generateAiReview("weekly", `${state.month}-W${week}`, `[data-week-review="${week}"]`, button);
+    });
+  });
+  await Promise.all([1, 2, 3, 4, 5].map((week) => (
+    loadAiReview("weekly", `${state.month}-W${week}`, `[data-week-review="${week}"]`)
+  )));
 }
 
 function weekForm(week, data) {
@@ -294,7 +310,11 @@ function weekForm(week, data) {
         <label>这周最大的冲突或触发<textarea name="biggest_conflict" rows="3">${escapeHtml(data.biggest_conflict || "")}</textarea></label>
         <label>下周只改一个点<textarea name="next_focus" rows="3" placeholder="只写一个重点">${escapeHtml(data.next_focus || "")}</textarea></label>
       </div>
-      <div class="form-actions"><button class="button primary" type="submit">保存第 ${week} 周</button></div>
+      <div class="form-actions">
+        <button class="button subtle" type="button" data-ai-week="${week}">生成本周 AI 反馈</button>
+        <button class="button primary" type="submit">保存第 ${week} 周</button>
+      </div>
+      <div class="ai-review-result empty-state" data-week-review="${week}">还没有生成本周复盘</div>
     </form>
   `;
 }
@@ -333,6 +353,7 @@ async function loadMonthlySummary() {
   const el = $("#monthlySaveState");
   el.textContent = label;
   el.classList.toggle("saved", Boolean(data.updated_at));
+  await loadAiReview("monthly", state.month, "#monthlyAiReviewResult");
 }
 
 async function saveMonthlySummary(event) {
@@ -354,6 +375,79 @@ async function saveMonthlySummary(event) {
   el.textContent = `已保存 ${formatTime(saved.updated_at)}`;
   el.classList.add("saved");
   showToast("月度复盘已保存");
+}
+
+async function generateAiReview(periodType, periodKey, targetSelector, button) {
+  const target = $(targetSelector);
+  if (!target || button.disabled) return;
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "分析中……";
+  target.className = "ai-review-result loading-state";
+  target.textContent = "正在结合盖洛普画像、长期背景和相似历史生成反馈……";
+  try {
+    const review = await fetchJson("/api/ai-reviews", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ period_type: periodType, period_key: periodKey }),
+    });
+    renderAiReview(review, target);
+    showToast("AI 复盘已保存");
+  } catch (error) {
+    target.className = "ai-review-result error-state";
+    target.textContent = error.message || "AI 复盘生成失败";
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+}
+
+async function loadAiReview(periodType, periodKey, targetSelector) {
+  const target = $(targetSelector);
+  if (!target) return;
+  try {
+    const params = new URLSearchParams({ period_type: periodType, period_key: periodKey });
+    const review = await fetchJson(`/api/ai-reviews?${params}`);
+    if (review.id) renderAiReview(review, target);
+    else {
+      target.className = "ai-review-result empty-state";
+      target.textContent = periodType === "daily" ? "还没有生成今日复盘" : periodType === "weekly" ? "还没有生成本周复盘" : "还没有生成月度复盘";
+    }
+  } catch (error) {
+    target.className = "ai-review-result error-state";
+    target.textContent = error.message || "复盘读取失败";
+  }
+}
+
+function renderAiReview(review, target) {
+  const score = (label, value) => `
+    <div class="ai-score-card"><span>${label}</span><strong>${value ?? "—"}</strong><small>/ 10</small></div>
+  `;
+  const section = (label, value) => value ? `
+    <div class="ai-review-section"><b>${label}</b><p>${escapeHtml(value)}</p></div>
+  ` : "";
+  const actions = Array.isArray(review.actions) && review.actions.length
+    ? `<div class="ai-review-section"><b>接下来这样做</b><ol>${review.actions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol></div>`
+    : "";
+  target.className = "ai-review-result completed";
+  target.innerHTML = `
+    <div class="ai-score-grid">
+      ${score("我的行为", review.score_me)}
+      ${score("他的行为", review.score_partner)}
+      ${score("互动质量", review.relationship_score)}
+    </div>
+    ${section("本期结论", review.summary)}
+    <div class="ai-review-columns">
+      ${section("给我的反馈", review.feedback_me)}
+      ${section("给他的反馈", review.feedback_partner)}
+    </div>
+    ${section("进步证据", review.what_improved)}
+    ${section("需要警惕", review.risk_pattern)}
+    <div class="adjustment-goal"><span>下期唯一目标</span><strong>${escapeHtml(review.adjustment_goal || "暂无")}</strong></div>
+    ${actions}
+    ${section("可以直接这样说", review.conversation_example)}
+    <p class="review-meta">${escapeHtml(review.confidence || "")} · 第 ${Number(review.revision || 1)} 版 · ${escapeHtml(formatTime(review.updated_at))}</p>
+  `;
 }
 
 function setSaveState(person, text, saved) {

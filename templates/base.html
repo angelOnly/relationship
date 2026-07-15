@@ -18,6 +18,7 @@
         </span>
       </a>
       <nav class="main-nav" aria-label="主导航">
+        <a href="/chat" class="{% if request.path == '/chat' %}active{% endif %}">盖洛普对话</a>
         <a href="/actions" class="{% if request.path == '/actions' %}active{% endif %}">行动清单</a>
         <a href="/journal" class="{% if request.path in ['/', '/journal'] %}active{% endif %}">每日记录</a>
       </nav>
@@ -29,7 +30,7 @@
   </main>
 
   <footer class="site-footer">
-    <p>这个工具不是为了评判谁对谁错，而是帮助你们把伤害停下来，把需求说清楚。</p>
+    <p>这个工具不裁判谁对谁错；它帮助你们看见期待、调节才干，并把下一句话说清楚。</p>
   </footer>
 
   {% block scripts %}{% endblock %}

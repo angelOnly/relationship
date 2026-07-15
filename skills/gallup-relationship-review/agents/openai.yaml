@@ -1,0 +1,4 @@
+interface:
+  display_name: "盖洛普亲密关系复盘"
+  short_description: "用双方盖洛普才干状态分析冲突、沟通方式与长期进步趋势"
+  default_prompt: "使用 $gallup-relationship-review 帮我复盘刚才的冲突，并给出下一句怎么说。"

@@ -10,9 +10,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py ./
+COPY app.py relationship_ai.py ./
 COPY templates ./templates
 COPY static ./static
+COPY skills ./skills
 RUN mkdir -p /app/data
 
 EXPOSE 8080
