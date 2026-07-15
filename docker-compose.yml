@@ -1,0 +1,12 @@
+services:
+  relationship-journal:
+    build: .
+    container_name: relationship-journal
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+      - DATA_DIR=/app/data

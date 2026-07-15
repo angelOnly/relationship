@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#7f6f64">
+  <title>{% block title %}关系复盘{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="/journal">
+        <span class="brand-mark">从</span>
+        <span>
+          <strong>关系复盘</strong>
+          <small>先减少伤害，再恢复连接</small>
+        </span>
+      </a>
+      <nav class="main-nav" aria-label="主导航">
+        <a href="/actions" class="{% if request.path == '/actions' %}active{% endif %}">行动清单</a>
+        <a href="/journal" class="{% if request.path in ['/', '/journal'] %}active{% endif %}">每日记录</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="site-footer">
+    <p>这个工具不是为了评判谁对谁错，而是帮助你们把伤害停下来，把需求说清楚。</p>
+  </footer>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

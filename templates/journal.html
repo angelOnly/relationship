@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}每日记录 · 关系复盘{% endblock %}
+{% block content %}
+<section class="hero journal-hero">
+  <div>
+    <span class="eyebrow">一个月一个周期</span>
+    <h1>先写下来，再沟通</h1>
+    <p>每天分别记录三行和行动评分；每周写一次小结；月底看趋势，而不是被某一天的情绪定论。</p>
+  </div>
+  <div class="month-controller panel">
+    <label for="monthPicker">当前周期</label>
+    <div class="month-row">
+      <button class="icon-button" id="prevMonth" title="上个月">‹</button>
+      <input id="monthPicker" type="month">
+      <button class="icon-button" id="nextMonth" title="下个月">›</button>
+    </div>
+    <div class="month-actions">
+      <button class="button subtle" id="exportCsv">导出本月 CSV</button>
+      <button class="button subtle" id="backupJson">备份全部数据</button>
+    </div>
+  </div>
+</section>
+
+<section class="toolbar panel">
+  <div class="toolbar-group">
+    <label for="datePicker">记录日期</label>
+    <input id="datePicker" type="date" value="{{ today }}">
+  </div>
+  <div class="toolbar-group search-group">
+    <label for="searchInput">查询历史记录</label>
+    <input id="searchInput" type="search" placeholder="搜索关键词，例如：嘲讽、花、洗衣服">
+  </div>
+  <div class="toolbar-group">
+    <label for="filterCategory">筛选</label>
+    <select id="filterCategory">
+      <option value="">全部记录</option>
+      <option value="talk">需要沟通</option>
+      <option value="let_go">暂时放下</option>
+      <option value="triggered">情绪触发</option>
+    </select>
+  </div>
+  <button class="button primary" id="loadDate">打开当天记录</button>
+</section>
+
+<section class="tabs" aria-label="记录模块">
+  <button class="tab active" data-tab="daily">每日双人记录</button>
+  <button class="tab" data-tab="history">本月历史</button>
+  <button class="tab" data-tab="weekly">每周小结</button>
+  <button class="tab" data-tab="monthly">月度复盘</button>
+</section>
+
+<section id="daily" class="tab-panel active">
+  <div class="daily-grid">
+    <form class="panel entry-form" id="meForm" data-person="me">
+      <div class="panel-heading sticky-heading">
+        <div><span class="person-tag">我</span><h2>我的记录</h2></div>
+        <span class="save-state" id="meSaveState">未保存</span>
+      </div>
+      <div class="three-lines">
+        <label>1. 他今天做得还可以的一件事<textarea name="positive" rows="3" placeholder="具体写一件，不必夸大"></textarea></label>
+        <label>2. 我今天对他不满的一件事<textarea name="dissatisfaction" rows="3" placeholder="只写眼前事件，不做人格审判"></textarea></label>
+        <label>3. 这件不满怎么处理
+          <select name="category">
+            <option value="talk">需要沟通</option>
+            <option value="let_go">暂时放下</option>
+            <option value="triggered">主要是我被触发</option>
+          </select>
+        </label>
+      </div>
+      <details class="reflection" open>
+        <summary>把情绪翻译成需求</summary>
+        <label>我当时真正的感受<textarea name="feeling" rows="2" placeholder="例如：被忽视、被否定、害怕生活被拉低"></textarea></label>
+        <label>我真正需要的是什么<textarea name="need" rows="2" placeholder="例如：尊重、先询问、共同参与、被看见"></textarea></label>
+        <label>如果重来一次，我可以怎么说<textarea name="better_wording" rows="2" placeholder="用事件 + 感受 + 具体请求"></textarea></label>
+        <label>我希望他明天具体做的一件小事<textarea name="tomorrow_request" rows="2"></textarea></label>
+      </details>
+      <fieldset class="score-fieldset">
+        <legend>今天我的止损行动评分</legend>
+        <p class="score-help">3 = 做得不错，2 = 基本做到，1 = 事后才意识到，0 = 明显失控</p>
+        <div class="score-list" id="meScores"></div>
+      </fieldset>
+      <div class="form-actions">
+        <button type="button" class="button danger ghost" data-delete="me">清空当天</button>
+        <button type="submit" class="button primary">保存我的记录</button>
+      </div>
+    </form>
+
+    <form class="panel entry-form" id="partnerForm" data-person="partner">
+      <div class="panel-heading sticky-heading">
+        <div><span class="person-tag">他</span><h2>他的记录</h2></div>
+        <span class="save-state" id="partnerSaveState">未保存</span>
+      </div>
+      <div class="three-lines">
+        <label>1. 她今天做得还可以的一件事<textarea name="positive" rows="3" placeholder="具体写一件，不必夸大"></textarea></label>
+        <label>2. 我今天对她不满的一件事<textarea name="dissatisfaction" rows="3" placeholder="只写眼前事件，不做人身评价"></textarea></label>
+        <label>3. 这件不满怎么处理
+          <select name="category">
+            <option value="talk">需要沟通</option>
+            <option value="let_go">暂时放下</option>
+            <option value="triggered">主要是我被触发</option>
+          </select>
+        </label>
+      </div>
+      <details class="reflection" open>
+        <summary>把解释补成行动</summary>
+        <label>我当时真正的感受<textarea name="feeling" rows="2" placeholder="例如：被看不起、害怕冲突、不知怎么回应"></textarea></label>
+        <label>我真正需要的是什么<textarea name="need" rows="2" placeholder="例如：被尊重、给我思考时间、具体说明要求"></textarea></label>
+        <label>如果重来一次，我可以怎么说<textarea name="better_wording" rows="2" placeholder="原因 + 责任 + 下一步行动"></textarea></label>
+        <label>我希望她明天具体做的一件小事<textarea name="tomorrow_request" rows="2"></textarea></label>
+      </details>
+      <fieldset class="score-fieldset">
+        <legend>今天他的改变行动评分</legend>
+        <p class="score-help">3 = 做得不错，2 = 基本做到，1 = 被提醒后做到，0 = 没有做到</p>
+        <div class="score-list" id="partnerScores"></div>
+      </fieldset>
+      <div class="form-actions">
+        <button type="button" class="button danger ghost" data-delete="partner">清空当天</button>
+        <button type="submit" class="button primary">保存他的记录</button>
+      </div>
+    </form>
+  </div>
+</section>
+
+<section id="history" class="tab-panel">
+  <div class="panel">
+    <div class="panel-heading">
+      <div><span class="eyebrow">可追溯记录</span><h2 id="historyTitle">本月历史</h2></div>
+      <span class="muted" id="historyCount">0 条</span>
+    </div>
+    <div id="historyList" class="history-list empty-state">还没有记录。</div>
+  </div>
+</section>
+
+<section id="weekly" class="tab-panel">
+  <div class="weekly-grid" id="weeklyGrid"></div>
+</section>
+
+<section id="monthly" class="tab-panel">
+  <form class="panel monthly-form" id="monthlyForm">
+    <div class="panel-heading">
+      <div><span class="eyebrow">月底再判断趋势</span><h2>月度复盘</h2></div>
+      <span class="save-state" id="monthlySaveState">未保存</span>
+    </div>
+    <div class="monthly-grid">
+      <label>这个月，关系有没有少伤害一点<textarea name="relationship_change" rows="5"></textarea></label>
+      <label>哪些方法确实有效<textarea name="what_worked" rows="5"></textarea></label>
+      <label>还有哪些问题没有解决<textarea name="unresolved" rows="5"></textarea></label>
+      <label>下个月只调整什么<textarea name="next_month_plan" rows="5" placeholder="最多写 1—2 个重点"></textarea></label>
+    </div>
+    <div class="form-actions"><button type="submit" class="button primary">保存月度复盘</button></div>
+  </form>
+</section>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='app.js') }}"></script>{% endblock %}

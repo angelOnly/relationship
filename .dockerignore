@@ -1,0 +1,7 @@
+__pycache__
+*.pyc
+*.pyo
+.git
+relationship_journal.zip
+data/*.db
+data/*.db-*
