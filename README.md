@@ -69,11 +69,23 @@ OPENAI_JSON_MODE=0
 
 ## Docker Compose 部署
 
+如果使用 Portainer、1Panel、群晖 Container Manager 等面板部署 Stack，不要依赖上传 `.env.local` 文件。请在面板的环境变量区域填写：
+
+```dotenv
+OPENAI_API_KEY=替换为你新生成的密钥
+OPENAI_BASE_URL=https://llm-api.xiaolicloud.cn:18443/v1
+OPENAI_MODEL_NAME=gemini-3.1-pro-high
+OPENAI_TIMEOUT_SECONDS=45
+OPENAI_JSON_MODE=0
+```
+
+截图里的 `env file /data/compose/15/.env.local not found` 表示部署面板在服务器临时目录里找不到 `.env.local`。当前 `docker-compose.yml` 已改为直接读取 Stack 环境变量，因此不需要把密钥文件上传到这个目录。
+
 首次部署：
 
 ```bash
 cd relationship_journal
-docker compose up -d --build
+docker compose --env-file .env.local up -d --build
 ```
 
 浏览器打开 `http://服务器IP:8080`。手机与服务器处于同一局域网时，也可直接用手机访问这个地址。
