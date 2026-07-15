@@ -20,7 +20,14 @@
         <span class="eyebrow">盖洛普技能已注入</span>
         <h2>场景复盘对话</h2>
       </div>
-      <button class="button subtle" id="newChat" type="button">新场景</button>
+      <div class="chat-heading-actions">
+        <label class="model-picker compact-model-picker" for="chatModel">
+          <span>本次模型</span>
+          <select id="chatModel"><option value="">正在加载模型…</option></select>
+          <small id="chatModelHint">模型只在服务端调用</small>
+        </label>
+        <button class="button subtle" id="newChat" type="button">新场景</button>
+      </div>
     </div>
 
     <div id="chatMessages" class="chat-messages" aria-live="polite">
@@ -85,4 +92,4 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='chat.js') }}"></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='chat.js', v=app_version) }}"></script>{% endblock %}

@@ -1,11 +1,56 @@
 {% extends "base.html" %}
+
+{% macro daily_form(form_id, person, person_label, state_id) %}
+<form class="panel entry-form" id="{{ form_id }}" data-person="{{ person }}">
+  <div class="panel-heading sticky-heading">
+    <div><span class="person-tag">{{ person_label }}</span><h2>{{ person_label }}的记录</h2></div>
+    <span class="save-state" id="{{ state_id }}">未保存</span>
+  </div>
+  <p class="schema-note"><b>通用格式 v1</b> · 不要求每天发生冲突，也不要求自己打分。</p>
+  <div class="universal-fields">
+    <label>1. 值得肯定的一件具体事
+      <textarea name="appreciation" rows="3" placeholder="可以是对方、自己或这段关系中值得保留的一件小事"></textarea>
+    </label>
+    <label>2. 今天最值得记录的一件具体事
+      <textarea name="event" rows="3" placeholder="只写可观察的事实；平静、靠近、分歧或未解决都可以"></textarea>
+    </label>
+    <label>3. 我当时的感受
+      <textarea name="feeling" rows="2" placeholder="例如：安心、委屈、紧张、被理解、无力"></textarea>
+    </label>
+    <label>4. 我真正重视或需要什么
+      <textarea name="need" rows="2" placeholder="例如：尊重、连接、空间、确定性、共同参与"></textarea>
+    </label>
+    <label>5. 我怎么表达，对方怎么回应
+      <textarea name="response" rows="3" placeholder="记录双方可观察的言行，不推断动机"></textarea>
+    </label>
+    <label>6. 接下来是否需要修复，以及一个具体请求
+      <textarea name="repair_request" rows="3" placeholder="没有下一步也可以写“只记录”；有请求时写成可回答、可执行的一件事"></textarea>
+    </label>
+    <label>这件事目前处于什么状态
+      <select name="follow_up">
+        <option value="none">只记录，不需要处理</option>
+        <option value="communicate">需要表达或倾听</option>
+        <option value="coordinate">需要共同协商</option>
+        <option value="repair">需要修复连接</option>
+        <option value="pause">先暂停，约定再谈</option>
+        <option value="resolved">已经处理</option>
+      </select>
+    </label>
+  </div>
+  <div class="form-actions">
+    <button type="button" class="button danger ghost" data-delete="{{ person }}">清空当天</button>
+    <button type="submit" class="button primary">保存{{ person_label }}的记录</button>
+  </div>
+</form>
+{% endmacro %}
+
 {% block title %}每日记录 · 关系复盘{% endblock %}
 {% block content %}
 <section class="hero journal-hero">
   <div>
-    <span class="eyebrow">一个月一个周期</span>
+    <span class="eyebrow">长期记录 · 不绑定某一阶段</span>
     <h1>先写下来，再沟通</h1>
-    <p>每天分别记录三行和行动评分；每周写一次小结；月底看趋势，而不是被某一天的情绪定论。</p>
+    <p>每天只记录事实、感受、需要、双方回应与下一步；行为评分交给 AI。表单保持通用，阶段目标可以随关系变化而替换。</p>
   </div>
   <div class="month-controller panel">
     <label for="monthPicker">当前周期</label>
@@ -28,111 +73,62 @@
   </div>
   <div class="toolbar-group search-group">
     <label for="searchInput">查询历史记录</label>
-    <input id="searchInput" type="search" placeholder="搜索关键词，例如：嘲讽、花、洗衣服">
+    <input id="searchInput" type="search" placeholder="搜索事实、感受、需要或请求">
   </div>
   <div class="toolbar-group">
-    <label for="filterCategory">筛选</label>
-    <select id="filterCategory">
+    <label for="filterFollowUp">跟进状态</label>
+    <select id="filterFollowUp">
       <option value="">全部记录</option>
-      <option value="talk">需要沟通</option>
-      <option value="let_go">暂时放下</option>
-      <option value="triggered">情绪触发</option>
+      <option value="none">只记录</option>
+      <option value="communicate">需要表达或倾听</option>
+      <option value="coordinate">需要共同协商</option>
+      <option value="repair">需要修复连接</option>
+      <option value="pause">先暂停再谈</option>
+      <option value="resolved">已经处理</option>
     </select>
   </div>
   <button class="button primary" id="loadDate">打开当天记录</button>
 </section>
 
+<section class="panel ai-control-bar" aria-label="AI 功能入口">
+  <div class="ai-control-copy">
+    <span class="feature-pill">AI 已接入</span>
+    <div><strong>盖洛普评分与复盘</strong><small>日、周、月都使用同一份长期画像与历史精炼记录</small></div>
+  </div>
+  <label class="model-picker" for="reviewModel">
+    <span>本次模型</span>
+    <select id="reviewModel"><option value="">正在加载模型…</option></select>
+    <small id="reviewModelHint">模型只在服务端调用</small>
+  </label>
+  <a class="button primary" href="/chat">打开盖洛普对话</a>
+</section>
+
 <section class="tabs" aria-label="记录模块">
-  <button class="tab active" data-tab="daily">每日双人记录</button>
+  <button class="tab active" data-tab="daily">每日记录 + AI 评分</button>
   <button class="tab" data-tab="history">本月历史</button>
   <button class="tab" data-tab="weekly">每周小结</button>
   <button class="tab" data-tab="monthly">月度复盘</button>
 </section>
 
 <section id="daily" class="tab-panel active">
-  <div class="daily-grid">
-    <form class="panel entry-form" id="meForm" data-person="me">
-      <div class="panel-heading sticky-heading">
-        <div><span class="person-tag">我</span><h2>我的记录</h2></div>
-        <span class="save-state" id="meSaveState">未保存</span>
-      </div>
-      <div class="three-lines">
-        <label>1. 他今天做得还可以的一件事<textarea name="positive" rows="3" placeholder="具体写一件，不必夸大"></textarea></label>
-        <label>2. 我今天对他不满的一件事<textarea name="dissatisfaction" rows="3" placeholder="只写眼前事件，不做人格审判"></textarea></label>
-        <label>3. 这件不满怎么处理
-          <select name="category">
-            <option value="talk">需要沟通</option>
-            <option value="let_go">暂时放下</option>
-            <option value="triggered">主要是我被触发</option>
-          </select>
-        </label>
-      </div>
-      <details class="reflection" open>
-        <summary>把情绪翻译成需求</summary>
-        <label>我当时真正的感受<textarea name="feeling" rows="2" placeholder="例如：被忽视、被否定、害怕生活被拉低"></textarea></label>
-        <label>我真正需要的是什么<textarea name="need" rows="2" placeholder="例如：尊重、先询问、共同参与、被看见"></textarea></label>
-        <label>如果重来一次，我可以怎么说<textarea name="better_wording" rows="2" placeholder="用事件 + 感受 + 具体请求"></textarea></label>
-        <label>我希望他明天具体做的一件小事<textarea name="tomorrow_request" rows="2"></textarea></label>
-      </details>
-      <fieldset class="score-fieldset">
-        <legend>今天我的止损行动评分</legend>
-        <p class="score-help">3 = 做得不错，2 = 基本做到，1 = 事后才意识到，0 = 明显失控</p>
-        <div class="score-list" id="meScores"></div>
-      </fieldset>
-      <div class="form-actions">
-        <button type="button" class="button danger ghost" data-delete="me">清空当天</button>
-        <button type="submit" class="button primary">保存我的记录</button>
-      </div>
-    </form>
-
-    <form class="panel entry-form" id="partnerForm" data-person="partner">
-      <div class="panel-heading sticky-heading">
-        <div><span class="person-tag">他</span><h2>他的记录</h2></div>
-        <span class="save-state" id="partnerSaveState">未保存</span>
-      </div>
-      <div class="three-lines">
-        <label>1. 她今天做得还可以的一件事<textarea name="positive" rows="3" placeholder="具体写一件，不必夸大"></textarea></label>
-        <label>2. 我今天对她不满的一件事<textarea name="dissatisfaction" rows="3" placeholder="只写眼前事件，不做人身评价"></textarea></label>
-        <label>3. 这件不满怎么处理
-          <select name="category">
-            <option value="talk">需要沟通</option>
-            <option value="let_go">暂时放下</option>
-            <option value="triggered">主要是我被触发</option>
-          </select>
-        </label>
-      </div>
-      <details class="reflection" open>
-        <summary>把解释补成行动</summary>
-        <label>我当时真正的感受<textarea name="feeling" rows="2" placeholder="例如：被看不起、害怕冲突、不知怎么回应"></textarea></label>
-        <label>我真正需要的是什么<textarea name="need" rows="2" placeholder="例如：被尊重、给我思考时间、具体说明要求"></textarea></label>
-        <label>如果重来一次，我可以怎么说<textarea name="better_wording" rows="2" placeholder="原因 + 责任 + 下一步行动"></textarea></label>
-        <label>我希望她明天具体做的一件小事<textarea name="tomorrow_request" rows="2"></textarea></label>
-      </details>
-      <fieldset class="score-fieldset">
-        <legend>今天他的改变行动评分</legend>
-        <p class="score-help">3 = 做得不错，2 = 基本做到，1 = 被提醒后做到，0 = 没有做到</p>
-        <div class="score-list" id="partnerScores"></div>
-      </fieldset>
-      <div class="form-actions">
-        <button type="button" class="button danger ghost" data-delete="partner">清空当天</button>
-        <button type="submit" class="button primary">保存他的记录</button>
-      </div>
-    </form>
-  </div>
-  <section class="panel ai-review-panel">
+  <section class="panel ai-review-panel daily-ai-review">
     <div class="panel-heading compact-heading">
-      <div><span class="eyebrow">双方保存后生成</span><h2>今日 AI 反馈</h2></div>
+      <div><span class="eyebrow">保存至少一份记录后生成</span><h2>今日 AI 评分与反馈</h2></div>
       <button type="button" class="button primary" id="dailyAiReview">分析今天</button>
     </div>
-    <p class="ai-review-hint">模型会结合双方记录和相似历史，自动评价可观察行为，并只给明天一个调整重点。</p>
+    <p class="ai-review-hint">AI 只评价当天可观察行为；双方都填写时判断更完整。评分不写回人格标签，只留下证据、反馈和明天一个目标。</p>
     <div id="dailyAiReviewResult" class="ai-review-result empty-state">还没有生成今日复盘</div>
   </section>
+  <div class="daily-grid">
+    {{ daily_form('meForm', 'me', '我', 'meSaveState') }}
+    {{ daily_form('partnerForm', 'partner', '他', 'partnerSaveState') }}
+  </div>
 </section>
 
 <section id="history" class="tab-panel">
   <div class="panel">
     <div class="panel-heading">
-      <div><span class="eyebrow">可追溯记录</span><h2 id="historyTitle">本月历史</h2></div>
+      <div><span class="eyebrow">跨版本可追溯</span><h2 id="historyTitle">本月历史</h2></div>
       <span class="muted" id="historyCount">0 条</span>
     </div>
     <div id="historyList" class="history-list empty-state">还没有记录。</div>
@@ -141,8 +137,8 @@
 
 <section id="weekly" class="tab-panel">
   <div class="panel review-intro-panel">
-    <span class="eyebrow">每周只看重复模式</span>
-    <p>先保存本周小结，再点击对应周的“AI 反馈”。模型会比较本周记录和相似历史，给出一个下周目标。</p>
+    <span class="eyebrow">每周看模式，不写判决书</span>
+    <p>记录值得保留的时刻、重复模式与双方信号，再让 AI 比较本周日记和历史，只给下周一个重点。</p>
   </div>
   <div class="weekly-grid" id="weeklyGrid"></div>
 </section>
@@ -150,14 +146,15 @@
 <section id="monthly" class="tab-panel">
   <form class="panel monthly-form" id="monthlyForm">
     <div class="panel-heading">
-      <div><span class="eyebrow">月底再判断趋势</span><h2>月度复盘</h2></div>
+      <div><span class="eyebrow">月底比较长期趋势</span><h2>月度复盘</h2></div>
       <span class="save-state" id="monthlySaveState">未保存</span>
     </div>
     <div class="monthly-grid">
-      <label>这个月，关系有没有少伤害一点<textarea name="relationship_change" rows="5"></textarea></label>
-      <label>哪些方法确实有效<textarea name="what_worked" rows="5"></textarea></label>
-      <label>还有哪些问题没有解决<textarea name="unresolved" rows="5"></textarea></label>
-      <label>下个月只调整什么<textarea name="next_month_plan" rows="5" placeholder="最多写 1—2 个重点"></textarea></label>
+      <label>这个月关系整体有什么变化<textarea name="overall_change" rows="5"></textarea></label>
+      <label>哪些做法确实有帮助<textarea name="what_helped" rows="5"></textarea></label>
+      <label>反复出现了哪些互动模式<textarea name="recurring_patterns" rows="5"></textarea></label>
+      <label>接下来最需要照顾什么<textarea name="needs_attention" rows="5"></textarea></label>
+      <label>下个月唯一优先目标<textarea name="next_focus" rows="5" placeholder="只选一个最高优先级目标"></textarea></label>
     </div>
     <div class="form-actions">
       <button type="button" class="button subtle" id="monthlyAiReview">生成本月 AI 反馈</button>
@@ -169,4 +166,4 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='app.js') }}"></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='app.js', v=app_version) }}"></script>{% endblock %}

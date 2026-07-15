@@ -8,3 +8,7 @@ __pycache__
 relationship_journal.zip
 data/*.db
 data/*.db-*
+.test-data
+.e2e-data
+.codex-materials
+.codex-docx-render

@@ -2,10 +2,10 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#7f6f64">
   <title>{% block title %}关系复盘{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v=app_version) }}">
 </head>
 <body>
   <header class="site-header">
@@ -18,7 +18,7 @@
         </span>
       </a>
       <nav class="main-nav" aria-label="主导航">
-        <a href="/chat" class="{% if request.path == '/chat' %}active{% endif %}">盖洛普对话</a>
+        <a href="/chat" class="nav-ai {% if request.path == '/chat' %}active{% endif %}">盖洛普 AI 对话</a>
         <a href="/actions" class="{% if request.path == '/actions' %}active{% endif %}">行动清单</a>
         <a href="/journal" class="{% if request.path in ['/', '/journal'] %}active{% endif %}">每日记录</a>
       </nav>
@@ -31,6 +31,7 @@
 
   <footer class="site-footer">
     <p>这个工具不裁判谁对谁错；它帮助你们看见期待、调节才干，并把下一句话说清楚。</p>
+    <small>版本 {{ app_version }} · 通用记录格式</small>
   </footer>
 
   {% block scripts %}{% endblock %}

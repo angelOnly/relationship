@@ -12,41 +12,45 @@ from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from flask import Flask, Response, jsonify, render_template, request
 
+from journal_store import (
+    RECORD_SCHEMAS,
+    create_action_item,
+    get_record,
+    get_record_schema,
+    init_flexible_schema,
+    list_action_items,
+    list_record_revisions,
+    list_records,
+    serialize_record,
+    soft_delete_record,
+    update_action_item,
+    upsert_ai_goal,
+    upsert_record,
+)
 from relationship_ai import (
     AIConfigError,
+    AIModelError,
     AIServiceError,
     analyze_relationship,
+    get_model_catalog,
+    resolve_model_name,
     review_journal_period,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 DB_PATH = DATA_DIR / "relationship.db"
+APP_VERSION = os.getenv("APP_VERSION", "3.0.0")
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
+app.jinja_env.globals["app_version"] = APP_VERSION
 
 PEOPLE = {"me", "partner"}
-CATEGORY_VALUES = {"talk", "let_go", "triggered"}
-
-MY_ACTION_KEYS = [
-    "no_mockery",
-    "no_personal_attack",
-    "no_old_score_dump",
-    "no_voice_escalation",
-    "pause_when_triggered",
-]
-
-PARTNER_ACTION_KEYS = [
-    "reason_plus_action",
-    "no_silent_avoidance",
-    "no_personality_as_excuse",
-    "ask_before_changing",
-    "give_specific_feedback",
-]
 
 
 def get_conn() -> sqlite3.Connection:
@@ -62,49 +66,6 @@ def init_db() -> None:
     with closing(get_conn()) as conn:
         conn.executescript(
             """
-            CREATE TABLE IF NOT EXISTS daily_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                entry_date TEXT NOT NULL,
-                month_key TEXT NOT NULL,
-                person TEXT NOT NULL CHECK(person IN ('me', 'partner')),
-                positive TEXT NOT NULL DEFAULT '',
-                dissatisfaction TEXT NOT NULL DEFAULT '',
-                category TEXT NOT NULL DEFAULT 'talk' CHECK(category IN ('talk', 'let_go', 'triggered')),
-                feeling TEXT NOT NULL DEFAULT '',
-                need TEXT NOT NULL DEFAULT '',
-                better_wording TEXT NOT NULL DEFAULT '',
-                tomorrow_request TEXT NOT NULL DEFAULT '',
-                action_scores TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE(entry_date, person)
-            );
-
-            CREATE TABLE IF NOT EXISTS weekly_summaries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                month_key TEXT NOT NULL,
-                week_no INTEGER NOT NULL CHECK(week_no BETWEEN 1 AND 6),
-                less_harm TEXT NOT NULL DEFAULT '',
-                my_progress TEXT NOT NULL DEFAULT '',
-                partner_progress TEXT NOT NULL DEFAULT '',
-                biggest_conflict TEXT NOT NULL DEFAULT '',
-                next_focus TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE(month_key, week_no)
-            );
-
-            CREATE TABLE IF NOT EXISTS monthly_summaries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                month_key TEXT NOT NULL UNIQUE,
-                relationship_change TEXT NOT NULL DEFAULT '',
-                what_worked TEXT NOT NULL DEFAULT '',
-                unresolved TEXT NOT NULL DEFAULT '',
-                next_month_plan TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
             CREATE TABLE IF NOT EXISTS analysis_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 conversation_id TEXT NOT NULL,
@@ -130,6 +91,7 @@ def init_db() -> None:
                 next_action TEXT NOT NULL DEFAULT '',
                 uncertainty TEXT NOT NULL DEFAULT '',
                 confidence TEXT NOT NULL DEFAULT '',
+                model_name TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -157,6 +119,7 @@ def init_db() -> None:
                 actions TEXT NOT NULL DEFAULT '[]',
                 conversation_example TEXT NOT NULL DEFAULT '',
                 confidence TEXT NOT NULL DEFAULT '',
+                model_name TEXT NOT NULL DEFAULT '',
                 revision INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -167,12 +130,34 @@ def init_db() -> None:
                 ON ai_period_reviews(updated_at DESC);
             """
         )
+        _ensure_column(conn, "analysis_records", "model_name", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "ai_period_reviews", "model_name", "TEXT NOT NULL DEFAULT ''")
+        init_flexible_schema(conn)
         conn.commit()
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 @app.before_request
 def ensure_db() -> None:
     init_db()
+
+
+@app.after_request
+def add_runtime_headers(response: Response) -> Response:
+    response.headers["X-Relationship-Journal-Version"] = APP_VERSION
+    if response.mimetype == "text/html":
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
 
 
 @app.get("/")
@@ -195,6 +180,20 @@ def chat_page():
     return render_template("chat.html")
 
 
+@app.get("/api/models")
+def list_ai_models():
+    return jsonify(get_model_catalog())
+
+
+@app.get("/api/record-schemas/<record_type>")
+def get_active_record_schema(record_type: str):
+    with closing(get_conn()) as conn:
+        schema = get_record_schema(conn, record_type)
+    if schema is None:
+        return jsonify({"error": "记录类型不存在。"}), 404
+    return jsonify(schema)
+
+
 @app.post("/api/chat")
 def chat_with_coach():
     data = request.get_json(silent=True) or {}
@@ -210,7 +209,15 @@ def chat_with_coach():
     memories = find_similar_analyses(message, limit=5)
 
     try:
-        result = analyze_relationship(message, history, memories)
+        model_name = resolve_model_name(clean_text(data.get("model")) or None)
+        result = analyze_relationship(
+            message,
+            history,
+            memories,
+            model_name=model_name,
+        )
+    except AIModelError as exc:
+        return jsonify({"error": str(exc)}), 400
     except AIConfigError as exc:
         return jsonify({"error": str(exc)}), 503
     except AIServiceError as exc:
@@ -220,7 +227,12 @@ def chat_with_coach():
     if result.get("status") == "complete" and isinstance(result.get("record"), dict):
         record = normalize_analysis_record(result["record"])
         if record["question_summary"]:
-            saved = save_analysis_record(record, conversation_id, turn_id)
+            saved = save_analysis_record(
+                record,
+                conversation_id,
+                turn_id,
+                model_name,
+            )
 
     return jsonify(
         {
@@ -230,6 +242,7 @@ def chat_with_coach():
             "analysis_saved": bool(saved),
             "record": saved,
             "memory_count": len(memories),
+            "model_name": model_name,
         }
     )
 
@@ -357,54 +370,44 @@ def generate_ai_period_review():
     memories = find_similar_analyses(search_text, limit=5) if search_text else []
     label_map = {"daily": "每日", "weekly": "每周", "monthly": "每月"}
     try:
+        model_name = resolve_model_name(clean_text(data.get("model")) or None)
         result = review_journal_period(
             period_type,
             f"{label_map[period_type]} {period_key}",
             source,
             memories,
+            model_name=model_name,
         )
+    except AIModelError as exc:
+        return jsonify({"error": str(exc)}), 400
     except AIConfigError as exc:
         return jsonify({"error": str(exc)}), 503
     except AIServiceError as exc:
         return jsonify({"error": str(exc)}), 502
 
     review = normalize_ai_period_review(result)
-    saved = save_ai_period_review(period_type, period_key, review)
+    saved = save_ai_period_review(period_type, period_key, review, model_name)
     return jsonify(saved)
 
 
 @app.get("/api/entries")
 def list_entries():
-    month = request.args.get("month", "").strip()
-    q = request.args.get("q", "").strip()
-    person = request.args.get("person", "").strip()
-    category = request.args.get("category", "").strip()
-
-    clauses: list[str] = []
-    params: list[Any] = []
-    if month:
-        clauses.append("month_key = ?")
-        params.append(month)
-    if person in PEOPLE:
-        clauses.append("person = ?")
-        params.append(person)
-    if category in CATEGORY_VALUES:
-        clauses.append("category = ?")
-        params.append(category)
-    if q:
-        clauses.append(
-            "(positive LIKE ? OR dissatisfaction LIKE ? OR feeling LIKE ? OR need LIKE ? OR better_wording LIKE ? OR tomorrow_request LIKE ?)"
-        )
-        like = f"%{q}%"
-        params.extend([like] * 6)
-
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    sql = f"SELECT * FROM daily_entries {where} ORDER BY entry_date DESC, person ASC"
-
+    month = clean_text(request.args.get("month"))[:7]
+    q = clean_text(request.args.get("q"))[:200]
+    person = clean_text(request.args.get("person"))
+    follow_up = clean_text(request.args.get("follow_up") or request.args.get("category"))
     with closing(get_conn()) as conn:
-        rows = conn.execute(sql, params).fetchall()
-
-    return jsonify([serialize_entry(row) for row in rows])
+        records = list_records(
+            conn,
+            "daily",
+            period_prefix=month,
+            author=person if person in PEOPLE else "",
+            query=q,
+        )
+    entries = [daily_record_to_api(record) for record in records]
+    if follow_up:
+        entries = [entry for entry in entries if entry["follow_up"] == follow_up]
+    return jsonify(entries)
 
 
 @app.get("/api/entries/<entry_date>/<person>")
@@ -412,21 +415,15 @@ def get_entry(entry_date: str, person: str):
     if person not in PEOPLE:
         return jsonify({"error": "invalid person"}), 400
     with closing(get_conn()) as conn:
-        row = conn.execute(
-            "SELECT * FROM daily_entries WHERE entry_date = ? AND person = ?",
-            (entry_date, person),
-        ).fetchone()
-    if row is None:
-        return jsonify(empty_entry(entry_date, person))
-    return jsonify(serialize_entry(row))
+        record = get_record(conn, "daily", entry_date, person)
+    return jsonify(daily_record_to_api(record) if record else empty_entry(entry_date, person))
 
 
 @app.post("/api/entries")
 def save_entry():
     data = request.get_json(silent=True) or {}
-    entry_date = str(data.get("entry_date", "")).strip()
-    person = str(data.get("person", "")).strip()
-    category = str(data.get("category", "talk")).strip()
+    entry_date = clean_text(data.get("entry_date"))
+    person = clean_text(data.get("person"))
 
     try:
         datetime.strptime(entry_date, "%Y-%m-%d")
@@ -434,58 +431,18 @@ def save_entry():
         return jsonify({"error": "entry_date must be YYYY-MM-DD"}), 400
     if person not in PEOPLE:
         return jsonify({"error": "person must be me or partner"}), 400
-    if category not in CATEGORY_VALUES:
-        category = "talk"
-
-    action_scores = normalize_action_scores(data.get("action_scores"), person)
-    now = datetime.now().isoformat(timespec="seconds")
-    month_key = entry_date[:7]
-
-    values = (
-        entry_date,
-        month_key,
-        person,
-        clean_text(data.get("positive")),
-        clean_text(data.get("dissatisfaction")),
-        category,
-        clean_text(data.get("feeling")),
-        clean_text(data.get("need")),
-        clean_text(data.get("better_wording")),
-        clean_text(data.get("tomorrow_request")),
-        json.dumps(action_scores, ensure_ascii=False),
-        now,
-        now,
-    )
-
+    content = normalize_daily_content(data)
     with closing(get_conn()) as conn:
-        conn.execute(
-            """
-            INSERT INTO daily_entries (
-                entry_date, month_key, person, positive, dissatisfaction, category,
-                feeling, need, better_wording, tomorrow_request, action_scores,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(entry_date, person) DO UPDATE SET
-                month_key = excluded.month_key,
-                positive = excluded.positive,
-                dissatisfaction = excluded.dissatisfaction,
-                category = excluded.category,
-                feeling = excluded.feeling,
-                need = excluded.need,
-                better_wording = excluded.better_wording,
-                tomorrow_request = excluded.tomorrow_request,
-                action_scores = excluded.action_scores,
-                updated_at = excluded.updated_at
-            """,
-            values,
+        record = upsert_record(
+            conn,
+            record_type="daily",
+            period_key=entry_date,
+            author=person,
+            data=content,
+            metadata={"source": "web", "format": "universal"},
         )
         conn.commit()
-        row = conn.execute(
-            "SELECT * FROM daily_entries WHERE entry_date = ? AND person = ?",
-            (entry_date, person),
-        ).fetchone()
-
-    return jsonify(serialize_entry(row)), 200
+    return jsonify(daily_record_to_api(record)), 200
 
 
 @app.delete("/api/entries/<entry_date>/<person>")
@@ -493,138 +450,79 @@ def delete_entry(entry_date: str, person: str):
     if person not in PEOPLE:
         return jsonify({"error": "invalid person"}), 400
     with closing(get_conn()) as conn:
-        conn.execute(
-            "DELETE FROM daily_entries WHERE entry_date = ? AND person = ?",
-            (entry_date, person),
-        )
+        deleted = soft_delete_record(conn, "daily", entry_date, person)
         conn.commit()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "deleted": deleted})
 
 
 @app.get("/api/weeks")
 def list_weeks():
-    month = request.args.get("month", "").strip()
+    month = clean_text(request.args.get("month"))
     if not month:
         return jsonify([])
     with closing(get_conn()) as conn:
-        rows = conn.execute(
-            "SELECT * FROM weekly_summaries WHERE month_key = ? ORDER BY week_no ASC",
-            (month,),
-        ).fetchall()
-    return jsonify([dict(row) for row in rows])
+        records = list_records(conn, "weekly", period_prefix=f"{month}-W")
+    weeks = [weekly_record_to_api(record) for record in records]
+    weeks.sort(key=lambda item: item["week_no"])
+    return jsonify(weeks)
 
 
 @app.post("/api/weeks")
 def save_week():
     data = request.get_json(silent=True) or {}
-    month_key = str(data.get("month_key", "")).strip()
-    week_no = int(data.get("week_no", 0) or 0)
+    month_key = clean_text(data.get("month_key"))
+    try:
+        week_no = int(data.get("week_no", 0) or 0)
+    except (TypeError, ValueError):
+        week_no = 0
     try:
         datetime.strptime(month_key, "%Y-%m")
     except ValueError:
         return jsonify({"error": "month_key must be YYYY-MM"}), 400
     if not 1 <= week_no <= 6:
         return jsonify({"error": "week_no must be 1-6"}), 400
-
-    now = datetime.now().isoformat(timespec="seconds")
-    values = (
-        month_key,
-        week_no,
-        clean_text(data.get("less_harm")),
-        clean_text(data.get("my_progress")),
-        clean_text(data.get("partner_progress")),
-        clean_text(data.get("biggest_conflict")),
-        clean_text(data.get("next_focus")),
-        now,
-        now,
-    )
-
+    content = normalize_weekly_content(data)
     with closing(get_conn()) as conn:
-        conn.execute(
-            """
-            INSERT INTO weekly_summaries (
-                month_key, week_no, less_harm, my_progress, partner_progress,
-                biggest_conflict, next_focus, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(month_key, week_no) DO UPDATE SET
-                less_harm = excluded.less_harm,
-                my_progress = excluded.my_progress,
-                partner_progress = excluded.partner_progress,
-                biggest_conflict = excluded.biggest_conflict,
-                next_focus = excluded.next_focus,
-                updated_at = excluded.updated_at
-            """,
-            values,
+        record = upsert_record(
+            conn,
+            record_type="weekly",
+            period_key=f"{month_key}-W{week_no}",
+            author="joint",
+            data=content,
+            metadata={"source": "web", "format": "universal"},
         )
         conn.commit()
-        row = conn.execute(
-            "SELECT * FROM weekly_summaries WHERE month_key = ? AND week_no = ?",
-            (month_key, week_no),
-        ).fetchone()
-    return jsonify(dict(row))
+    return jsonify(weekly_record_to_api(record))
 
 
 @app.get("/api/monthly-summary")
 def get_monthly_summary():
-    month = request.args.get("month", "").strip()
+    month = clean_text(request.args.get("month"))
     with closing(get_conn()) as conn:
-        row = conn.execute(
-            "SELECT * FROM monthly_summaries WHERE month_key = ?",
-            (month,),
-        ).fetchone()
-    if row is None:
-        return jsonify(
-            {
-                "month_key": month,
-                "relationship_change": "",
-                "what_worked": "",
-                "unresolved": "",
-                "next_month_plan": "",
-            }
-        )
-    return jsonify(dict(row))
+        record = get_record(conn, "monthly", month, "joint")
+    return jsonify(monthly_record_to_api(record) if record else empty_monthly_record(month))
 
 
 @app.post("/api/monthly-summary")
 def save_monthly_summary():
     data = request.get_json(silent=True) or {}
-    month_key = str(data.get("month_key", "")).strip()
+    month_key = clean_text(data.get("month_key"))
     try:
         datetime.strptime(month_key, "%Y-%m")
     except ValueError:
         return jsonify({"error": "month_key must be YYYY-MM"}), 400
-    now = datetime.now().isoformat(timespec="seconds")
-    values = (
-        month_key,
-        clean_text(data.get("relationship_change")),
-        clean_text(data.get("what_worked")),
-        clean_text(data.get("unresolved")),
-        clean_text(data.get("next_month_plan")),
-        now,
-        now,
-    )
+    content = normalize_monthly_content(data)
     with closing(get_conn()) as conn:
-        conn.execute(
-            """
-            INSERT INTO monthly_summaries (
-                month_key, relationship_change, what_worked, unresolved,
-                next_month_plan, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(month_key) DO UPDATE SET
-                relationship_change = excluded.relationship_change,
-                what_worked = excluded.what_worked,
-                unresolved = excluded.unresolved,
-                next_month_plan = excluded.next_month_plan,
-                updated_at = excluded.updated_at
-            """,
-            values,
+        record = upsert_record(
+            conn,
+            record_type="monthly",
+            period_key=month_key,
+            author="joint",
+            data=content,
+            metadata={"source": "web", "format": "universal"},
         )
         conn.commit()
-        row = conn.execute(
-            "SELECT * FROM monthly_summaries WHERE month_key = ?",
-            (month_key,),
-        ).fetchone()
-    return jsonify(dict(row))
+    return jsonify(monthly_record_to_api(record))
 
 
 @app.get("/api/months")
@@ -632,23 +530,86 @@ def list_months():
     with closing(get_conn()) as conn:
         rows = conn.execute(
             """
-            SELECT month_key, MAX(updated_at) AS last_updated, COUNT(*) AS entry_count
-            FROM daily_entries
-            GROUP BY month_key
+            SELECT substr(period_key, 1, 7) AS month_key,
+                   MAX(updated_at) AS last_updated,
+                   COUNT(*) AS entry_count
+            FROM record_documents
+            WHERE record_type = 'daily' AND deleted_at = ''
+            GROUP BY substr(period_key, 1, 7)
             ORDER BY month_key DESC
             """
         ).fetchall()
     return jsonify([dict(row) for row in rows])
 
 
+@app.get("/api/action-items")
+def get_action_items():
+    statuses = [part for part in clean_text(request.args.get("status")).split(",") if part]
+    with closing(get_conn()) as conn:
+        items = list_action_items(conn, statuses=statuses or None)
+    return jsonify(items)
+
+
+@app.post("/api/action-items")
+def add_action_item():
+    data = request.get_json(silent=True) or {}
+    title = clean_text(data.get("title"))[:300]
+    if not title:
+        return jsonify({"error": "请写下一个具体行动目标。"}), 400
+    owner = clean_text(data.get("owner")) or "both"
+    kind = clean_text(data.get("kind")) or "goal"
+    if owner not in {"me", "partner", "both"}:
+        return jsonify({"error": "行动负责人无效。"}), 400
+    if kind not in {"boundary", "practice", "goal"}:
+        return jsonify({"error": "行动类型无效。"}), 400
+    with closing(get_conn()) as conn:
+        item = create_action_item(
+            conn,
+            {
+                "owner": owner,
+                "kind": kind,
+                "title": title,
+                "detail": clean_text(data.get("detail"))[:1200],
+                "status": "active",
+                "source": "manual",
+                "start_date": clean_text(data.get("start_date"))[:10],
+                "due_date": clean_text(data.get("due_date"))[:10],
+            },
+        )
+        conn.commit()
+    return jsonify(item), 201
+
+
+@app.patch("/api/action-items/<int:action_id>")
+def patch_action_item(action_id: int):
+    data = request.get_json(silent=True) or {}
+    changes: dict[str, Any] = {}
+    if "status" in data:
+        status = clean_text(data.get("status"))
+        if status not in {"suggested", "active", "paused", "completed", "archived"}:
+            return jsonify({"error": "行动状态无效。"}), 400
+        changes["status"] = status
+    if "title" in data:
+        title = clean_text(data.get("title"))[:300]
+        if not title:
+            return jsonify({"error": "行动标题不能为空。"}), 400
+        changes["title"] = title
+    if "detail" in data:
+        changes["detail"] = clean_text(data.get("detail"))[:1200]
+    with closing(get_conn()) as conn:
+        item = update_action_item(conn, action_id, changes)
+        conn.commit()
+    if item is None:
+        return jsonify({"error": "行动项不存在。"}), 404
+    return jsonify(item)
+
+
 @app.get("/api/export.csv")
 def export_csv():
-    month = request.args.get("month", "").strip()
+    month = clean_text(request.args.get("month"))
     with closing(get_conn()) as conn:
-        rows = conn.execute(
-            "SELECT * FROM daily_entries WHERE month_key = ? ORDER BY entry_date, person",
-            (month,),
-        ).fetchall()
+        records = list_records(conn, "daily", period_prefix=month)
+    entries = [daily_record_to_api(record) for record in reversed(records)]
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -656,31 +617,33 @@ def export_csv():
         [
             "日期",
             "记录人",
-            "对方做得好的事",
-            "不满的事",
-            "处理分类",
-            "真实感受",
-            "真正需求",
-            "更好的表达",
-            "明日请求",
-            "行动评分",
+            "值得肯定的事",
+            "关键事件",
+            "感受",
+            "需要",
+            "双方回应",
+            "修复或具体请求",
+            "跟进状态",
+            "记录格式",
+            "修订版本",
             "更新时间",
         ]
     )
-    for row in rows:
+    for entry in entries:
         writer.writerow(
             [
-                row["entry_date"],
-                "我" if row["person"] == "me" else "他",
-                row["positive"],
-                row["dissatisfaction"],
-                row["category"],
-                row["feeling"],
-                row["need"],
-                row["better_wording"],
-                row["tomorrow_request"],
-                row["action_scores"],
-                row["updated_at"],
+                entry["entry_date"],
+                "我" if entry["person"] == "me" else "他",
+                entry["appreciation"],
+                entry["event"],
+                entry["feeling"],
+                entry["need"],
+                entry["response"],
+                entry["repair_request"],
+                entry["follow_up"],
+                f"{entry['schema_key']}@{entry['schema_version']}",
+                entry["revision"],
+                entry["updated_at"],
             ]
         )
 
@@ -688,16 +651,26 @@ def export_csv():
     return Response(
         "\ufeff" + output.getvalue(),
         mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": download_disposition(
+                filename,
+                f"relationship-review-{month or 'all'}.csv",
+            )
+        },
     )
 
 
 @app.get("/api/backup.json")
 def backup_json():
     with closing(get_conn()) as conn:
-        entries = [serialize_entry(row) for row in conn.execute("SELECT * FROM daily_entries ORDER BY entry_date, person")]
-        weeks = [dict(row) for row in conn.execute("SELECT * FROM weekly_summaries ORDER BY month_key, week_no")]
-        months = [dict(row) for row in conn.execute("SELECT * FROM monthly_summaries ORDER BY month_key")]
+        record_rows = conn.execute("SELECT * FROM record_documents ORDER BY record_type, period_key, author").fetchall()
+        records = [serialize_record(row) for row in record_rows]
+        entries = [daily_record_to_api(item) for item in records if item["record_type"] == "daily" and not item["deleted_at"]]
+        weeks = [weekly_record_to_api(item) for item in records if item["record_type"] == "weekly" and not item["deleted_at"]]
+        months = [monthly_record_to_api(item) for item in records if item["record_type"] == "monthly" and not item["deleted_at"]]
+        revisions = list_record_revisions(conn)
+        actions = list_action_items(conn)
+        schemas = [dict(row) for row in conn.execute("SELECT * FROM record_schemas ORDER BY record_type, version")]
         analyses = [
             serialize_analysis_record(row)
             for row in conn.execute("SELECT * FROM analysis_records ORDER BY created_at")
@@ -707,24 +680,55 @@ def backup_json():
             for row in conn.execute("SELECT * FROM ai_period_reviews ORDER BY period_type, period_key")
         ]
     payload = {
-        "version": 2,
+        "version": 3,
+        "app_version": APP_VERSION,
         "exported_at": datetime.now().isoformat(timespec="seconds"),
         "daily_entries": entries,
         "weekly_summaries": weeks,
         "monthly_summaries": months,
+        "record_documents": records,
+        "record_revisions": revisions,
+        "record_schemas": schemas,
+        "action_items": actions,
         "analysis_records": analyses,
         "ai_period_reviews": ai_reviews,
     }
     return Response(
         json.dumps(payload, ensure_ascii=False, indent=2),
         mimetype="application/json; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="关系复盘备份.json"'},
+        headers={
+            "Content-Disposition": download_disposition(
+                "关系复盘备份.json",
+                "relationship-review-backup.json",
+            )
+        },
     )
 
 
+def download_disposition(filename: str, fallback: str) -> str:
+    """Return an ASCII-safe header plus an RFC 5987 UTF-8 filename."""
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
+
+
 @app.get("/health")
+@app.get("/api/health")
 def health():
-    return jsonify({"status": "ok", "database": str(DB_PATH)})
+    model_catalog = get_model_catalog()
+    return jsonify(
+        {
+            "status": "ok",
+            "version": APP_VERSION,
+            "database": "ok",
+            "ai_configured": model_catalog["configured"],
+            "features": {
+                "gallup_chat": True,
+                "ai_period_reviews": True,
+                "model_selector": True,
+                "flexible_records": True,
+                "dynamic_actions": True,
+            },
+        }
+    )
 
 
 AI_REVIEW_STRING_FIELDS = (
@@ -762,11 +766,14 @@ def build_period_source(period_type: str, period_key: str) -> dict[str, Any]:
     source: dict[str, Any] = {"period_type": period_type, "period_key": period_key}
     with closing(get_conn()) as conn:
         if period_type == "daily":
-            entries = conn.execute(
-                "SELECT * FROM daily_entries WHERE entry_date = ? ORDER BY person",
-                (period_key,),
-            ).fetchall()
-            source["daily_entries"] = [entry_for_ai_review(row) for row in entries]
+            entries = [
+                record
+                for person in ("me", "partner")
+                if (record := get_record(conn, "daily", period_key, person))
+            ]
+            source["daily_entries"] = [
+                entry_for_ai_review(daily_record_to_api(record)) for record in entries
+            ]
         elif period_type == "weekly":
             match = re.fullmatch(r"(\d{4})-(\d{2})-W([1-6])", period_key)
             assert match is not None
@@ -776,38 +783,30 @@ def build_period_source(period_type: str, period_key: str) -> dict[str, Any]:
             if start_day <= days_in_month:
                 start_date = date(year, month, start_day)
                 end_date = date(year, month, min(start_day + 6, days_in_month))
-                entries = conn.execute(
-                    "SELECT * FROM daily_entries WHERE entry_date BETWEEN ? AND ? ORDER BY entry_date, person",
-                    (start_date.isoformat(), end_date.isoformat()),
-                ).fetchall()
+                entries = list_records(
+                    conn,
+                    "daily",
+                    date_from=start_date.isoformat(),
+                    date_to=end_date.isoformat(),
+                )
             else:
                 start_date = date(year, month, days_in_month)
                 end_date = start_date
                 entries = []
-            summary = conn.execute(
-                "SELECT * FROM weekly_summaries WHERE month_key = ? AND week_no = ?",
-                (f"{year:04d}-{month:02d}", week_no),
-            ).fetchone()
+            summary = get_record(conn, "weekly", period_key, "joint")
             source.update(
                 {
                     "date_range": [start_date.isoformat(), end_date.isoformat()],
-                    "daily_entries": [entry_for_ai_review(row) for row in entries],
-                    "weekly_summary": compact_row(summary, 900) if summary else None,
+                    "daily_entries": [
+                        entry_for_ai_review(daily_record_to_api(record)) for record in reversed(entries)
+                    ],
+                    "weekly_summary": compact_mapping(summary["data"], 900) if summary else None,
                 }
             )
         else:
-            entries = conn.execute(
-                "SELECT * FROM daily_entries WHERE month_key = ? ORDER BY entry_date, person",
-                (period_key,),
-            ).fetchall()
-            weeks = conn.execute(
-                "SELECT * FROM weekly_summaries WHERE month_key = ? ORDER BY week_no",
-                (period_key,),
-            ).fetchall()
-            month = conn.execute(
-                "SELECT * FROM monthly_summaries WHERE month_key = ?",
-                (period_key,),
-            ).fetchone()
+            entries = list_records(conn, "daily", period_prefix=period_key)
+            weeks = list_records(conn, "weekly", period_prefix=f"{period_key}-W")
+            month = get_record(conn, "monthly", period_key, "joint")
             analyses = conn.execute(
                 """
                 SELECT created_at, occurred_at, scene_type, question_summary,
@@ -821,9 +820,13 @@ def build_period_source(period_type: str, period_key: str) -> dict[str, Any]:
             ).fetchall()
             source.update(
                 {
-                    "daily_entries": [entry_for_ai_review(row) for row in entries],
-                    "weekly_summaries": [compact_row(row, 700) for row in weeks],
-                    "monthly_summary": compact_row(month, 1200) if month else None,
+                    "daily_entries": [
+                        entry_for_ai_review(daily_record_to_api(record)) for record in reversed(entries)
+                    ],
+                    "weekly_summaries": [
+                        compact_mapping(record["data"], 700) for record in reversed(weeks)
+                    ],
+                    "monthly_summary": compact_mapping(month["data"], 1200) if month else None,
                     "completed_scene_analyses": [compact_row(row, 700) for row in analyses],
                 }
             )
@@ -834,20 +837,22 @@ def build_period_source(period_type: str, period_key: str) -> dict[str, Any]:
     return source
 
 
-def entry_for_ai_review(row: sqlite3.Row) -> dict[str, Any]:
+def entry_for_ai_review(entry: dict[str, Any]) -> dict[str, Any]:
     fields = (
         "entry_date",
         "person",
-        "positive",
-        "dissatisfaction",
-        "category",
+        "appreciation",
+        "event",
         "feeling",
         "need",
-        "better_wording",
-        "tomorrow_request",
+        "response",
+        "repair_request",
+        "follow_up",
     )
     return {
-        field: clean_text(row[field])[:400] if field not in {"entry_date", "person", "category"} else row[field]
+        field: clean_text(entry.get(field))[:500]
+        if field not in {"entry_date", "person", "follow_up"}
+        else entry.get(field, "")
         for field in fields
     }
 
@@ -855,30 +860,38 @@ def entry_for_ai_review(row: sqlite3.Row) -> dict[str, Any]:
 def compact_row(row: sqlite3.Row, max_length: int) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key in row.keys():
-        if key in {"id", "created_at", "updated_at", "action_scores"}:
+        if key in {"id", "created_at", "updated_at"}:
             continue
         value = row[key]
         result[key] = clean_text(value)[:max_length] if isinstance(value, str) else value
     return result
 
 
+def compact_mapping(value: dict[str, Any], max_length: int) -> dict[str, Any]:
+    return {
+        key: clean_text(item)[:max_length] if isinstance(item, str) else item
+        for key, item in value.items()
+    }
+
+
 def review_source_text(source: dict[str, Any]) -> str:
     meaningful_keys = {
-        "positive",
-        "dissatisfaction",
+        "appreciation",
+        "event",
+        "response",
+        "repair_request",
+        "follow_up",
+        "highlights",
+        "recurring_pattern",
+        "my_learning",
+        "partner_signal",
+        "overall_change",
+        "what_helped",
+        "recurring_patterns",
+        "needs_attention",
+        "next_focus",
         "feeling",
         "need",
-        "better_wording",
-        "tomorrow_request",
-        "less_harm",
-        "my_progress",
-        "partner_progress",
-        "biggest_conflict",
-        "next_focus",
-        "relationship_change",
-        "what_worked",
-        "unresolved",
-        "next_month_plan",
         "question_summary",
         "progress_assessment",
         "next_action",
@@ -916,6 +929,7 @@ def save_ai_period_review(
     period_type: str,
     period_key: str,
     review: dict[str, Any],
+    model_name: str = "",
 ) -> dict[str, Any]:
     now = datetime.now().isoformat(timespec="seconds")
     values = (
@@ -933,6 +947,7 @@ def save_ai_period_review(
         json.dumps(review["actions"], ensure_ascii=False),
         review["conversation_example"],
         review["confidence"],
+        model_name,
         now,
         now,
     )
@@ -943,8 +958,8 @@ def save_ai_period_review(
                 period_type, period_key, summary, score_me, score_partner,
                 relationship_score, feedback_me, feedback_partner, what_improved,
                 risk_pattern, adjustment_goal, actions, conversation_example,
-                confidence, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                confidence, model_name, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(period_type, period_key) DO UPDATE SET
                 summary = excluded.summary,
                 score_me = excluded.score_me,
@@ -958,11 +973,20 @@ def save_ai_period_review(
                 actions = excluded.actions,
                 conversation_example = excluded.conversation_example,
                 confidence = excluded.confidence,
+                model_name = excluded.model_name,
                 revision = ai_period_reviews.revision + 1,
                 updated_at = excluded.updated_at
             """,
             values,
         )
+        if review["adjustment_goal"]:
+            upsert_ai_goal(
+                conn,
+                period_type,
+                period_key,
+                review["adjustment_goal"],
+                "；".join(review["actions"][:2]),
+            )
         conn.commit()
         row = conn.execute(
             "SELECT * FROM ai_period_reviews WHERE period_type = ? AND period_key = ?",
@@ -1057,6 +1081,7 @@ def save_analysis_record(
     record: dict[str, Any],
     conversation_id: str,
     turn_id: str,
+    model_name: str = "",
 ) -> dict[str, Any]:
     now = datetime.now().isoformat(timespec="seconds")
     values = (
@@ -1068,6 +1093,7 @@ def save_analysis_record(
         record["behavior_score"],
         json.dumps(record["behavior_dimensions"], ensure_ascii=False),
         *(record[field] for field in ANALYSIS_STRING_FIELDS[13:]),
+        model_name,
         now,
         now,
     )
@@ -1081,8 +1107,8 @@ def save_analysis_record(
                 interaction_loop, communication_guidance, recommended_wording,
                 behavior_feedback, behavior_score, behavior_dimensions, score_reason,
                 progress_assessment, next_action, uncertainty, confidence,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                model_name, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(turn_id) DO UPDATE SET
                 occurred_at = excluded.occurred_at,
                 scene_type = excluded.scene_type,
@@ -1105,6 +1131,7 @@ def save_analysis_record(
                 next_action = excluded.next_action,
                 uncertainty = excluded.uncertainty,
                 confidence = excluded.confidence,
+                model_name = excluded.model_name,
                 updated_at = excluded.updated_at
             """,
             values,
@@ -1184,43 +1211,143 @@ def chinese_bigrams(value: str) -> set[str]:
     return {chars[index : index + 2] for index in range(max(0, len(chars) - 1))}
 
 
-def serialize_entry(row: sqlite3.Row) -> dict[str, Any]:
-    item = dict(row)
-    try:
-        item["action_scores"] = json.loads(item.get("action_scores") or "{}")
-    except json.JSONDecodeError:
-        item["action_scores"] = {}
-    return item
+FOLLOW_UP_VALUES = {"none", "communicate", "coordinate", "repair", "pause", "resolved"}
+
+
+def normalize_daily_content(data: dict[str, Any]) -> dict[str, str]:
+    follow_up = clean_text(data.get("follow_up"))
+    if follow_up not in FOLLOW_UP_VALUES:
+        follow_up = "none"
+    return {
+        "appreciation": clean_text(data.get("appreciation"))[:3000],
+        "event": clean_text(data.get("event"))[:3000],
+        "feeling": clean_text(data.get("feeling"))[:3000],
+        "need": clean_text(data.get("need"))[:3000],
+        "response": clean_text(data.get("response"))[:3000],
+        "repair_request": clean_text(data.get("repair_request"))[:3000],
+        "follow_up": follow_up,
+    }
+
+
+def daily_record_to_api(record: dict[str, Any]) -> dict[str, Any]:
+    data = record.get("data", {})
+    appreciation = clean_text(data.get("appreciation"))
+    event = clean_text(data.get("event"))
+    response = clean_text(data.get("response"))
+    repair_request = clean_text(data.get("repair_request"))
+    follow_up = clean_text(data.get("follow_up")) or "none"
+    return {
+        "id": record.get("id"),
+        "entry_date": record.get("period_key", ""),
+        "month_key": clean_text(record.get("period_key"))[:7],
+        "person": record.get("author", ""),
+        "appreciation": appreciation,
+        "event": event,
+        "feeling": clean_text(data.get("feeling")),
+        "need": clean_text(data.get("need")),
+        "response": response,
+        "repair_request": repair_request,
+        "follow_up": follow_up,
+        "schema_key": record.get("schema_key", RECORD_SCHEMAS["daily"]["key"]),
+        "schema_version": record.get("schema_version", RECORD_SCHEMAS["daily"]["version"]),
+        "revision": record.get("revision", 0),
+        "created_at": record.get("created_at", ""),
+        "updated_at": record.get("updated_at", ""),
+    }
 
 
 def empty_entry(entry_date: str, person: str) -> dict[str, Any]:
-    keys = MY_ACTION_KEYS if person == "me" else PARTNER_ACTION_KEYS
     return {
         "entry_date": entry_date,
         "month_key": entry_date[:7],
         "person": person,
-        "positive": "",
-        "dissatisfaction": "",
-        "category": "talk",
+        "appreciation": "",
+        "event": "",
         "feeling": "",
         "need": "",
-        "better_wording": "",
-        "tomorrow_request": "",
-        "action_scores": {key: 3 for key in keys},
+        "response": "",
+        "repair_request": "",
+        "follow_up": "none",
+        "schema_key": RECORD_SCHEMAS["daily"]["key"],
+        "schema_version": RECORD_SCHEMAS["daily"]["version"],
+        "revision": 0,
+        "created_at": "",
+        "updated_at": "",
     }
 
 
-def normalize_action_scores(raw: Any, person: str) -> dict[str, int]:
-    keys = MY_ACTION_KEYS if person == "me" else PARTNER_ACTION_KEYS
-    raw = raw if isinstance(raw, dict) else {}
-    result: dict[str, int] = {}
-    for key in keys:
-        try:
-            score = int(raw.get(key, 3))
-        except (TypeError, ValueError):
-            score = 3
-        result[key] = max(0, min(3, score))
+def normalize_weekly_content(data: dict[str, Any]) -> dict[str, str]:
+    return {
+        "highlights": clean_text(data.get("highlights"))[:4000],
+        "recurring_pattern": clean_text(data.get("recurring_pattern"))[:4000],
+        "my_learning": clean_text(data.get("my_learning"))[:4000],
+        "partner_signal": clean_text(data.get("partner_signal"))[:4000],
+        "next_focus": clean_text(data.get("next_focus"))[:4000],
+    }
+
+
+def weekly_record_to_api(record: dict[str, Any]) -> dict[str, Any]:
+    data = record.get("data", {})
+    period_key = clean_text(record.get("period_key"))
+    match = re.fullmatch(r"(\d{4}-\d{2})-W([1-6])", period_key)
+    month_key, week_no = (match.group(1), int(match.group(2))) if match else (period_key[:7], 0)
+    result = {
+        "id": record.get("id"),
+        "month_key": month_key,
+        "week_no": week_no,
+        "highlights": clean_text(data.get("highlights")),
+        "recurring_pattern": clean_text(data.get("recurring_pattern")),
+        "my_learning": clean_text(data.get("my_learning")),
+        "partner_signal": clean_text(data.get("partner_signal")),
+        "next_focus": clean_text(data.get("next_focus")),
+        "schema_key": record.get("schema_key"),
+        "schema_version": record.get("schema_version"),
+        "revision": record.get("revision", 0),
+        "created_at": record.get("created_at", ""),
+        "updated_at": record.get("updated_at", ""),
+    }
     return result
+
+
+def normalize_monthly_content(data: dict[str, Any]) -> dict[str, str]:
+    return {
+        "overall_change": clean_text(data.get("overall_change"))[:5000],
+        "what_helped": clean_text(data.get("what_helped"))[:5000],
+        "recurring_patterns": clean_text(data.get("recurring_patterns"))[:5000],
+        "needs_attention": clean_text(data.get("needs_attention"))[:5000],
+        "next_focus": clean_text(data.get("next_focus"))[:5000],
+    }
+
+
+def monthly_record_to_api(record: dict[str, Any]) -> dict[str, Any]:
+    data = record.get("data", {})
+    result = {
+        "id": record.get("id"),
+        "month_key": record.get("period_key", ""),
+        "overall_change": clean_text(data.get("overall_change")),
+        "what_helped": clean_text(data.get("what_helped")),
+        "recurring_patterns": clean_text(data.get("recurring_patterns")),
+        "needs_attention": clean_text(data.get("needs_attention")),
+        "next_focus": clean_text(data.get("next_focus")),
+        "schema_key": record.get("schema_key"),
+        "schema_version": record.get("schema_version"),
+        "revision": record.get("revision", 0),
+        "created_at": record.get("created_at", ""),
+        "updated_at": record.get("updated_at", ""),
+    }
+    return result
+
+
+def empty_monthly_record(month_key: str) -> dict[str, Any]:
+    return monthly_record_to_api(
+        {
+            "period_key": month_key,
+            "data": {},
+            "schema_key": RECORD_SCHEMAS["monthly"]["key"],
+            "schema_version": RECORD_SCHEMAS["monthly"]["version"],
+            "revision": 0,
+        }
+    )
 
 
 def clean_text(value: Any) -> str:

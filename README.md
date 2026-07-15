@@ -1,83 +1,117 @@
 # 关系复盘｜盖洛普对话与长期复盘工具
 
-一个可直接用 Docker 部署的小型双人关系复盘网页。除每日记录外，新增了注入双方盖洛普才干画像的对话助手：它会用少量问题厘清场景，自动分析双方内在期待、才干状态与沟通方式，并只把完成后的精炼案例写入 SQLite。
+一个面向双人长期使用、可用 Docker 部署的关系记录网页。当前版本为 `3.0.0`，重点是把“长期记录结构”和“某一阶段的具体矛盾”分开：表单保存事实、感受、需要与回应，阶段目标可以采纳、暂停、完成或归档，不需要关系状态一变化就重新开发数据库。
 
-## 页面
+## 页面与使用方式
 
-- `/chat`：盖洛普场景对话、自动行为反馈、相似历史检索与进步趋势
-- `/actions`：双方必须停止和开始练习的行动清单
-- `/journal`：每日双人记录、历史查询、每周小结、月度复盘
+- `/journal`：手机优先的每日双人记录、历史查询、每周小结、月度复盘和 AI 反馈。
+- `/chat`：注入双方盖洛普画像的场景对话。模型先问 1–3 个关键问题，再分析内在期待、才干状态、互动循环和正确沟通方式。
+- `/actions`：长期共同底线、长期沟通练习，以及可变的阶段目标。
+
+推荐流程：双方分别保存当天记录 → 点击“分析今天” → 阅读 AI 的双向行为反馈与分数 → 在行动清单中决定是否采纳 AI 建议的唯一目标。每周、每月同样先保存小结，再生成对应周期的 AI 复盘。
+
+AI 评分只评价本周期可观察行为，包括期待表达、才干调节、回应对方和合作修复，不评价人格、爱意或关系价值。信息不足时允许不评分，不要求用户自己填写量表。
+
+## 长期通用记录结构
+
+每日记录固定关注：
+
+- 值得肯定的具体事实
+- 最值得记录的事件
+- 当时的感受和真正需要
+- 自己如何表达、对方如何回应
+- 修复请求与当前跟进状态
+
+周记录关注重复模式和有效做法，月记录关注趋势和下个周期唯一重点。具体矛盾、临时策略和 AI 目标不会变成数据库列。
+
+SQLite 使用通用文档与修订结构：
+
+- `record_schemas`：记录当前表单定义和版本。
+- `record_documents`：保存日、周、月的结构化内容。
+- `record_revisions`：每次修改都保留一个版本。
+- `action_items`：保存长期底线、练习和具有生命周期的阶段目标。
+- `analysis_records`：保存完成后的精炼盖洛普案例，支持关键词模糊检索。
+- `ai_period_reviews`：保存日、周、月 AI 评分、反馈和调整目标。
+
+本项目处于开发初期，不执行旧表迁移；新数据库不会创建旧版 `daily_entries`、`weekly_summaries` 和 `monthly_summaries`。
+
+## 盖洛普技能与长期背景
+
+项目内的 `skills/gallup-relationship-review` 会在盖洛普聊天和周期复盘中注入。`性格细节.md` 提炼出的内容作为“需要由本次事实验证的长期背景”，不是固定人格结论，也不能用来为羞辱、威胁、控制或失信免责。
+
+澄清阶段不写长期记忆。只有模型完成结构化分析后，应用才保存问题摘要、关键词、双方期待、才干状态、沟通方案、行为证据、自动评分、进步判断和时间戳，不保存寒暄与重复追问。
 
 ## 模型配置
 
-复制 `.env.example` 为 `.env.local`，在本地文件中配置服务端模型变量。`.env.local` 已被 Git 与 Docker 构建上下文忽略，浏览器不会接触 API 密钥。当前应用调用 OpenAI 兼容的 `/chat/completions` 接口。
+复制 `.env.example` 为 `.env.local`，一行写一个变量，不要把多个变量连在同一行：
 
-项目内的 `skills/gallup-relationship-review` 会在每一轮模型对话中注入。澄清阶段不写长期数据库；只有模型完成结构化分析后，才保存摘要、关键词、双方期待、才干状态、沟通方案、行为反馈、自动评分和进步判断。
+```dotenv
+OPENAI_API_KEY=替换为你新生成的密钥
+OPENAI_BASE_URL=https://llm-api.xiaolicloud.cn:18443/v1
+OPENAI_MODEL_NAME=gemini-3.1-pro-high
+OPENAI_TIMEOUT_SECONDS=45
+OPENAI_JSON_MODE=0
+```
+
+等号两侧不需要空格，值通常也不需要引号。`.env.local` 已被 Git 和 Docker 构建上下文忽略；密钥只由 Flask 服务端读取，浏览器不会拿到密钥。
+
+页面提供以下模型选择，服务端使用白名单映射：
+
+| 页面名称 | 实际请求模型 |
+| --- | --- |
+| `gemini-3.1-pro-high` | `gemini-3.1-pro-high` |
+| `gemini-3.5-flash-high` | `gemini-3-flash-agent` |
+| `gemini-3.5-flash-medium` | `gemini-3.5-flash-low` |
+| `gemini-3.1-flash-lite` | `gemini-3.1-flash-lite` |
+| `gemini-3.5-flash-extra-low` | `gemini-3.5-flash-extra-low` |
+
+应用调用 OpenAI 兼容的 `/chat/completions` 接口，实际使用的模型会随聊天分析或周期复盘记录到 SQLite。
 
 ## Docker Compose 部署
+
+首次部署：
 
 ```bash
 cd relationship_journal
 docker compose up -d --build
 ```
 
-浏览器打开：
+浏览器打开 `http://服务器IP:8080`。手机与服务器处于同一局域网时，也可直接用手机访问这个地址。
 
-```text
-http://服务器IP:8080
+如果部署后仍看到旧页面，确认服务器已经拿到当前项目文件，再强制重建容器：
+
+```bash
+docker compose down
+docker compose build --no-cache
+docker compose up -d --force-recreate
 ```
 
-停止：
+随后访问：
+
+```text
+http://服务器IP:8080/api/health
+```
+
+返回结果应包含 `"version":"3.0.0"`，且 `gallup_chat`、`ai_period_reviews`、`flexible_records`、`dynamic_actions` 和 `model_selector` 都为 `true`。HTML 已禁用缓存，静态资源也带版本参数；如果健康检查仍不是 `3.0.0`，说明访问的仍是旧容器或旧反向代理目标。
+
+停止服务：
 
 ```bash
 docker compose down
 ```
 
-更新代码后重建：
+## 数据持久化与备份
 
-```bash
-docker compose up -d --build
-```
+SQLite 数据库保存在 `./data/relationship.db`。`docker-compose.yml` 会把本地 `./data` 挂载到容器 `/app/data`，因此重建容器不会删除正式记录。
 
-## 数据持久化
+网页提供当前月份 CSV 导出和完整 JSON 备份。建议定期备份整个 `data` 目录。
 
-SQLite 数据库保存在：
+## 手机显示
 
-```text
-./data/relationship.db
-```
+页面采用响应式布局：窄屏下导航、模型选择器、双人表单、操作按钮和 AI 反馈会改为单列；输入框使用至少 16px 字号，避免 iPhone 聚焦时自动放大；页面不应产生横向滚动。手机访问时使用服务器的局域网 IP，不要使用手机自身的 `127.0.0.1`。
 
-`docker-compose.yml` 已将本地 `./data` 挂载到容器 `/app/data`，重建容器不会丢数据。
+## 更换端口与访问保护
 
-网页右上角还提供：
+要更换端口，可将 `docker-compose.yml` 中的 `"8080:8080"` 改为例如 `"8090:8080"`，随后访问 `http://服务器IP:8090`。
 
-- 导出当前月份 CSV
-- 备份全部记录 JSON
-
-建议定期备份整个 `data` 目录。
-
-## 更换端口
-
-将 `docker-compose.yml` 中：
-
-```yaml
-ports:
-  - "8080:8080"
-```
-
-改为例如：
-
-```yaml
-ports:
-  - "8090:8080"
-```
-
-然后访问 `http://服务器IP:8090`。
-
-## 反向代理
-
-使用 Nginx Proxy Manager 时，将 Forward Hostname/IP 指向运行 Docker 的机器 IP，Forward Port 填 `8080`，Scheme 选 `http`。
-
-## 说明
-
-当前版本没有账号登录，适合部署在家庭内网、VPN、ZeroTier 或带访问控制的反向代理后。若直接暴露公网，建议在 Nginx Proxy Manager 或 Cloudflare Access 增加认证。
+当前版本没有账号登录，适合家庭内网、VPN、ZeroTier，或带访问控制的反向代理。若直接暴露公网，请先在 Nginx Proxy Manager、Cloudflare Access 等入口增加认证；关系记录和 API 密钥都不适合裸露在公网。

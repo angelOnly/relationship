@@ -2,11 +2,13 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 const STORAGE_KEY = "relationship-gallup-chat-v1";
+const MODEL_STORAGE_KEY = "relationship-ai-model-v1";
 const state = loadState();
 
 document.addEventListener("DOMContentLoaded", () => {
   bindChat();
   renderStoredConversation();
+  setupModelPicker();
   Promise.all([loadRecords(), loadProgress()]);
 });
 
@@ -50,6 +52,7 @@ async function sendMessage(event) {
         turn_id: makeId(),
         message,
         history: priorHistory,
+        model: $("#chatModel")?.value || "",
       }),
     });
     state.conversationId = data.conversation_id;
@@ -66,6 +69,34 @@ async function sendMessage(event) {
     setPending(false, "一次只分析一个具体事件");
     input.focus();
   }
+}
+
+async function setupModelPicker() {
+  const select = $("#chatModel");
+  const hint = $("#chatModelHint");
+  try {
+    const catalog = await fetchJson("/api/models");
+    select.innerHTML = catalog.models.map((item) => (
+      `<option value="${escapeHtml(item.key)}">${escapeHtml(item.label)} · ${escapeHtml(item.description || "")}</option>`
+    )).join("");
+    const stored = localStorage.getItem(MODEL_STORAGE_KEY);
+    select.value = catalog.models.some((item) => item.key === stored) ? stored : catalog.default;
+    updateModelHint(catalog, select.value, hint);
+    select.addEventListener("change", () => {
+      localStorage.setItem(MODEL_STORAGE_KEY, select.value);
+      updateModelHint(catalog, select.value, hint);
+    });
+    if (!catalog.configured) hint.textContent = "服务端尚未完成模型密钥配置";
+  } catch (error) {
+    select.innerHTML = '<option value="">使用服务端默认模型</option>';
+    hint.textContent = error.message || "模型列表读取失败";
+  }
+}
+
+function updateModelHint(catalog, key, target) {
+  const item = catalog.models.find((model) => model.key === key);
+  if (!item) return;
+  target.textContent = item.key === item.model ? `模型标识：${item.model}` : `接口实际调用：${item.model}`;
 }
 
 function appendMessage(role, content, saved = false) {

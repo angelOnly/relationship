@@ -20,6 +20,41 @@ BASE_SKILL_FILES = (
 CHAT_CONTRACT = SKILL_DIR / "references" / "output-contract.md"
 JOURNAL_CONTRACT = SKILL_DIR / "references" / "journal-review-contract.md"
 
+# 左侧是页面展示/请求使用的稳定名称，右侧是当前兼容接口实际接收的模型 ID。
+# 映射按服务提供方给出的名称保留，不根据名称中的 high/medium 自行推断。
+MODEL_OPTIONS = (
+    {
+        "key": "gemini-3.1-pro-high",
+        "label": "gemini-3.1-pro-high",
+        "model": "gemini-3.1-pro-high",
+        "description": "深度场景分析",
+    },
+    {
+        "key": "gemini-3.5-flash-high",
+        "label": "gemini-3.5-flash-high",
+        "model": "gemini-3-flash-agent",
+        "description": "快速分析 · 高档",
+    },
+    {
+        "key": "gemini-3.5-flash-medium",
+        "label": "gemini-3.5-flash-medium",
+        "model": "gemini-3.5-flash-low",
+        "description": "快速分析 · 中档",
+    },
+    {
+        "key": "gemini-3.1-flash-lite",
+        "label": "gemini-3.1-flash-lite",
+        "model": "gemini-3.1-flash-lite",
+        "description": "轻量快速",
+    },
+    {
+        "key": "gemini-3.5-flash-extra-low",
+        "label": "gemini-3.5-flash-extra-low",
+        "model": "gemini-3.5-flash-extra-low",
+        "description": "超轻量快速",
+    },
+)
+
 
 class AIConfigError(RuntimeError):
     """Raised when the server-side provider configuration is incomplete."""
@@ -27,6 +62,10 @@ class AIConfigError(RuntimeError):
 
 class AIServiceError(RuntimeError):
     """Raised when the OpenAI-compatible provider cannot return a usable answer."""
+
+
+class AIModelError(ValueError):
+    """Raised when a client requests a model outside the server allowlist."""
 
 
 def load_local_env(path: Path | None = None) -> None:
@@ -54,9 +93,10 @@ def analyze_relationship(
     message: str,
     history: list[dict[str, str]],
     memories: list[dict[str, Any]],
+    model_name: str | None = None,
 ) -> dict[str, Any]:
     messages = build_messages(message, history, memories)
-    first_content = _call_chat_completions(messages)
+    first_content = _call_chat_completions(messages, model_name=model_name)
     parsed = _parse_structured_response(first_content)
     if parsed is not None:
         return parsed
@@ -71,7 +111,11 @@ def analyze_relationship(
             ),
         },
     ]
-    repaired_content = _call_chat_completions(repair_messages, temperature=0.0)
+    repaired_content = _call_chat_completions(
+        repair_messages,
+        temperature=0.0,
+        model_name=model_name,
+    )
     parsed = _parse_structured_response(repaired_content)
     if parsed is None:
         raise AIServiceError("模型返回了无法解析的结构化结果，请稍后重试。")
@@ -83,6 +127,7 @@ def review_journal_period(
     period_label: str,
     source: dict[str, Any],
     memories: list[dict[str, Any]],
+    model_name: str | None = None,
 ) -> dict[str, Any]:
     skill_bundle = _load_skill_bundle(JOURNAL_CONTRACT)
     source_json = json.dumps(source, ensure_ascii=False, separators=(",", ":"))
@@ -108,7 +153,7 @@ def review_journal_period(
         {"role": "system", "content": "相似历史精炼记录（可能为空或弱相关）：\n" + memory_json},
         {"role": "user", "content": "请复盘以下周期记录：\n" + source_json},
     ]
-    first_content = _call_chat_completions(messages)
+    first_content = _call_chat_completions(messages, model_name=model_name)
     parsed = _parse_journal_review(first_content)
     if parsed is not None:
         return parsed
@@ -120,7 +165,11 @@ def review_journal_period(
             "content": "把上一条原意不变地转换为 journal-review-contract.md 的单个 JSON 对象，不要代码围栏。",
         },
     ]
-    repaired_content = _call_chat_completions(repair_messages, temperature=0.0)
+    repaired_content = _call_chat_completions(
+        repair_messages,
+        temperature=0.0,
+        model_name=model_name,
+    )
     parsed = _parse_journal_review(repaired_content)
     if parsed is None:
         raise AIServiceError("模型返回了无法解析的周期复盘结果，请稍后重试。")
@@ -172,14 +221,72 @@ def _load_skill_bundle(contract: Path) -> str:
     return "\n".join(parts)
 
 
-def _provider_config() -> tuple[str, str, str, float, bool]:
+def get_model_catalog() -> dict[str, Any]:
+    """Return safe model metadata for the browser without exposing credentials."""
+    configured_model = os.getenv("OPENAI_MODEL_NAME", "").strip()
+    options = [dict(option) for option in MODEL_OPTIONS]
+    default_key = ""
+    if configured_model:
+        for option in options:
+            if configured_model == option["key"]:
+                default_key = option["key"]
+                break
+        if not default_key:
+            for option in options:
+                if configured_model == option["model"]:
+                    default_key = option["key"]
+                    break
+        if not default_key:
+            options.insert(
+                0,
+                {
+                    "key": configured_model,
+                    "label": configured_model,
+                    "model": configured_model,
+                    "description": "服务端默认模型",
+                },
+            )
+            default_key = configured_model
+    elif options:
+        default_key = options[0]["key"]
+
+    return {
+        "default": default_key,
+        "models": options,
+        "configured": bool(
+            os.getenv("OPENAI_API_KEY", "").strip() and configured_model
+        ),
+    }
+
+
+def resolve_model_name(selection: str | None = None) -> str:
+    """Resolve a UI model key to the provider model ID and reject arbitrary input."""
+    requested = str(selection or "").strip()
+    configured_model = os.getenv("OPENAI_MODEL_NAME", "").strip()
+    candidate = requested or configured_model
+    if not candidate:
+        raise AIConfigError("服务端尚未配置 OPENAI_MODEL_NAME。")
+
+    for option in MODEL_OPTIONS:
+        if candidate == option["key"]:
+            return option["model"]
+        if candidate == option["model"]:
+            return option["model"]
+
+    # 管理员可以把环境变量设为未来新增的模型；浏览器不能任意绕过白名单。
+    if not requested and candidate == configured_model:
+        return candidate
+    if requested and requested == configured_model:
+        return configured_model
+    raise AIModelError("所选模型不在服务端允许列表中，请刷新页面后重新选择。")
+
+
+def _provider_config(model_name: str | None = None) -> tuple[str, str, str, float, bool]:
     key = os.getenv("OPENAI_API_KEY", "").strip()
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
-    model = os.getenv("OPENAI_MODEL_NAME", "").strip()
+    model = resolve_model_name(model_name)
     if not key:
         raise AIConfigError("服务端尚未配置 OPENAI_API_KEY。")
-    if not model:
-        raise AIConfigError("服务端尚未配置 OPENAI_MODEL_NAME。")
     try:
         timeout = max(5.0, min(float(os.getenv("OPENAI_TIMEOUT_SECONDS", "45")), 120.0))
     except ValueError:
@@ -192,8 +299,9 @@ def _call_chat_completions(
     messages: list[dict[str, str]],
     *,
     temperature: float = 0.25,
+    model_name: str | None = None,
 ) -> str:
-    key, base_url, model, timeout, json_mode = _provider_config()
+    key, base_url, model, timeout, json_mode = _provider_config(model_name)
     payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -210,7 +318,7 @@ def _call_chat_completions(
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "relationship-journal/2.0",
+            "User-Agent": "relationship-journal/3.0",
         },
         method="POST",
     )

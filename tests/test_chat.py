@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import tempfile
 import unittest
 from contextlib import closing
@@ -64,6 +66,14 @@ def period_review_result() -> dict:
 
 class ChatApiTestCase(unittest.TestCase):
     def setUp(self) -> None:
+        self.env_patcher = patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "test-key-not-a-real-secret",
+                "OPENAI_MODEL_NAME": "gemini-3.1-pro-high",
+            },
+        )
+        self.env_patcher.start()
         self.temp_dir = tempfile.TemporaryDirectory()
         journal_app.DATA_DIR = Path(self.temp_dir.name)
         journal_app.DB_PATH = journal_app.DATA_DIR / "test.db"
@@ -73,6 +83,7 @@ class ChatApiTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+        self.env_patcher.stop()
 
     @patch("app.analyze_relationship")
     def test_clarification_turn_is_not_persisted(self, mock_analyze) -> None:
@@ -104,6 +115,7 @@ class ChatApiTestCase(unittest.TestCase):
             "turn_id": "turn000002",
             "message": "昨晚吃饭时他一直点评菜，我觉得被忽视。",
             "history": [],
+            "model": "gemini-3.5-flash-high",
         }
         first = self.client.post("/api/chat", json=payload)
         second = self.client.post("/api/chat", json=payload)
@@ -114,6 +126,22 @@ class ChatApiTestCase(unittest.TestCase):
             rows = conn.execute("SELECT * FROM analysis_records").fetchall()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["behavior_score"], 6)
+        self.assertEqual(rows[0]["model_name"], "gemini-3-flash-agent")
+        self.assertEqual(mock_analyze.call_args.kwargs["model_name"], "gemini-3-flash-agent")
+
+    def test_model_catalog_exposes_requested_aliases_and_rejects_unknown(self) -> None:
+        catalog = self.client.get("/api/models").get_json()
+        mapping = {item["key"]: item["model"] for item in catalog["models"]}
+        self.assertEqual(mapping["gemini-3.5-flash-high"], "gemini-3-flash-agent")
+        self.assertEqual(mapping["gemini-3.5-flash-medium"], "gemini-3.5-flash-low")
+        self.assertEqual(mapping["gemini-3.1-flash-lite"], "gemini-3.1-flash-lite")
+        self.assertEqual(mapping["gemini-3.5-flash-extra-low"], "gemini-3.5-flash-extra-low")
+
+        response = self.client.post(
+            "/api/chat",
+            json={"message": "测试未知模型", "model": "arbitrary-expensive-model"},
+        )
+        self.assertEqual(response.status_code, 400)
 
     @patch("app.analyze_relationship")
     def test_chinese_fuzzy_search_and_progress(self, mock_analyze) -> None:
@@ -155,6 +183,76 @@ class ChatApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("还没有", response.get_json()["error"])
 
+    def test_daily_records_use_versioned_documents_and_keep_revisions(self) -> None:
+        payload = {
+            "entry_date": "2026-07-16",
+            "person": "me",
+            "appreciation": "他愿意认真听完",
+            "event": "我们讨论了周末安排",
+            "feeling": "安心",
+            "need": "共同参与",
+            "response": "我提出两个选项，他补充了时间限制",
+            "repair_request": "明晚一起确认最终安排",
+            "follow_up": "coordinate",
+        }
+        first = self.client.post("/api/entries", json=payload).get_json()
+        payload["response"] = "我们各自说明限制后确定了一个方案"
+        second = self.client.post("/api/entries", json=payload).get_json()
+        self.assertEqual(first["schema_key"], "universal-daily")
+        self.assertEqual(second["revision"], 2)
+
+        with closing(journal_app.get_conn()) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            document = conn.execute("SELECT * FROM record_documents").fetchone()
+            revision_count = conn.execute("SELECT COUNT(*) FROM record_revisions").fetchone()[0]
+        self.assertNotIn("daily_entries", tables)
+        self.assertEqual(document["record_type"], "daily")
+        self.assertEqual(json.loads(document["data_json"])["follow_up"], "coordinate")
+        self.assertEqual(revision_count, 2)
+
+    def test_action_goals_have_a_lifecycle(self) -> None:
+        baseline = self.client.get("/api/action-items").get_json()
+        self.assertGreaterEqual(len([item for item in baseline if item["source"] == "baseline"]), 6)
+        created = self.client.post(
+            "/api/action-items",
+            json={
+                "owner": "both",
+                "title": "每周确认一次共同安排",
+                "detail": "周日晚确定下一周唯一需要协调的事情",
+            },
+        )
+        self.assertEqual(created.status_code, 201)
+        item = created.get_json()
+        completed = self.client.patch(
+            f"/api/action-items/{item['id']}",
+            json={"status": "completed"},
+        ).get_json()
+        self.assertEqual(completed["status"], "completed")
+
+    def test_download_headers_support_chinese_filenames(self) -> None:
+        self.client.post(
+            "/api/entries",
+            json={
+                "entry_date": "2026-07-16",
+                "person": "me",
+                "event": "测试导出",
+                "follow_up": "none",
+            },
+        )
+        csv_response = self.client.get("/api/export.csv?month=2026-07")
+        backup_response = self.client.get("/api/backup.json")
+
+        self.assertEqual(csv_response.status_code, 200)
+        self.assertEqual(backup_response.status_code, 200)
+        self.assertTrue(csv_response.data.startswith(b"\xef\xbb\xbf"))
+        self.assertIn("filename*=UTF-8''", csv_response.headers["Content-Disposition"])
+        self.assertIn("filename*=UTF-8''", backup_response.headers["Content-Disposition"])
+        csv_response.headers["Content-Disposition"].encode("latin-1")
+        backup_response.headers["Content-Disposition"].encode("latin-1")
+
     @patch("app.review_journal_period")
     def test_daily_ai_review_is_scored_and_upserted(self, mock_review) -> None:
         mock_review.return_value = period_review_result()
@@ -164,13 +262,13 @@ class ChatApiTestCase(unittest.TestCase):
                 json={
                     "entry_date": "2026-07-16",
                     "person": person,
-                    "positive": "对方愿意停下来听",
-                    "dissatisfaction": "回应仍不够具体",
-                    "category": "talk",
+                    "appreciation": "对方愿意停下来听",
+                    "event": "讨论时回应仍不够具体",
                     "feeling": "有点失望",
                     "need": need,
-                    "better_wording": "我想约一个明确回复时间",
-                    "tomorrow_request": "明晚九点前回复",
+                    "response": "我想约一个明确回复时间",
+                    "repair_request": "明晚九点前回复",
+                    "follow_up": "communicate",
                 },
             )
             self.assertEqual(saved.status_code, 200)
@@ -189,7 +287,12 @@ class ChatApiTestCase(unittest.TestCase):
         self.assertEqual(len(loaded["actions"]), 2)
         with closing(journal_app.get_conn()) as conn:
             count = conn.execute("SELECT COUNT(*) FROM ai_period_reviews").fetchone()[0]
+            ai_goal = conn.execute(
+                "SELECT * FROM action_items WHERE source = 'ai_daily'"
+            ).fetchone()
         self.assertEqual(count, 1)
+        self.assertIsNotNone(ai_goal)
+        self.assertEqual(ai_goal["status"], "suggested")
 
 
 if __name__ == "__main__":

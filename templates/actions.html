@@ -1,100 +1,81 @@
 {% extends "base.html" %}
 {% block title %}行动清单 · 关系复盘{% endblock %}
 {% block content %}
-<section class="hero compact">
+<section class="hero compact actions-hero">
   <div>
-    <span class="eyebrow">30 天止损协议</span>
-    <h1>这个月，我们先不追求谈透</h1>
-    <p>先停下伤害性的表达，再慢慢恢复平等、安全、可持续的沟通。解释可以被听见，但解释不能代替改变。</p>
+    <span class="eyebrow">长期底线稳定 · 阶段目标可替换</span>
+    <h1>留下原则，更新练习</h1>
+    <p>共同底线长期有效；当前目标来自你们自己或 AI 复盘，可以采纳、暂停、完成和归档。下个月不需要重新开发一张表。</p>
   </div>
   <aside class="principle-card">
-    <strong>共同原则</strong>
-    <p>不当场深谈，不在情绪高峰做关系判决；先写下来，冷静后一次只谈一件事。</p>
+    <strong>使用方法</strong>
+    <p>同时进行的阶段目标最多一到两个。目标失效时归档，不把过去的处方永久贴在任何人身上。</p>
   </aside>
 </section>
 
-<section class="rule-grid">
-  <article class="panel action-panel me-panel">
+<section class="action-dashboard">
+  <article class="panel action-goals-panel">
     <div class="panel-heading">
-      <div>
-        <span class="person-tag">我</span>
-        <h2>我必须停止的事</h2>
-      </div>
-      <span class="panel-note">先停止毁灭式表达</span>
+      <div><span class="eyebrow">随关系阶段变化</span><h2>当前阶段目标</h2></div>
+      <span class="muted" id="activeGoalCount">0 项</span>
     </div>
-    <div class="action-list danger-list">
-      <div class="action-item"><b>停止嘲讽</b><p>不说“你可真行”“你也就这样”，不使用轻蔑、挖苦的语气。</p></div>
-      <div class="action-item"><b>停止人格贬低</b><p>不把一次行为升级成“你没用、你无聊、你一无是处”。</p></div>
-      <div class="action-item"><b>停止翻旧账轰炸</b><p>眼前只谈眼前；旧账先写进“待沟通”，另约时间。</p></div>
-      <div class="action-item"><b>停止提高音量压人</b><p>一发现声音变大、开始讽刺，立即暂停，不靠气势赢。</p></div>
-      <div class="action-item"><b>停止逼问和关系判死刑</b><p>不逼对方马上回答，不在上头时说离婚、绝交、没意义。</p></div>
-      <div class="action-item"><b>停止用冷漠惩罚</b><p>可以独处，但要说明“我会回来继续谈”，不让对方猜。</p></div>
-    </div>
-
-    <div class="divider"></div>
-
-    <h3>我要开始练习的事</h3>
-    <div class="action-list growth-list">
-      <div class="action-item"><b>把审判改成需求</b><p>从“你怎么这么差”改成“这件事让我失望，我需要……”</p></div>
-      <div class="action-item"><b>情绪超过 7 分先写</b><p>先离开现场、写下事实和感受，再决定是否沟通。</p></div>
-      <div class="action-item"><b>每天看见一件好事</b><p>不是洗白问题，而是防止“一无是处”的负面滤镜接管。</p></div>
-      <div class="action-item"><b>先接住，再解释</b><p>对方表达不满时，先复述他的感受，之后再讲自己的原因。</p></div>
-      <div class="action-item"><b>只提出具体请求</b><p>请求要能执行，例如“动我整理好的东西前先问我”。</p></div>
-    </div>
+    <div id="goalList" class="dynamic-action-list empty-state">正在读取行动目标…</div>
   </article>
 
-  <article class="panel action-panel partner-panel">
+  <form class="panel action-create-form" id="actionForm">
+    <div class="panel-heading compact-heading">
+      <div><span class="eyebrow">手动增加</span><h2>添加一个当前目标</h2></div>
+    </div>
+    <label>谁来练习
+      <select name="owner">
+        <option value="both">共同</option>
+        <option value="me">我</option>
+        <option value="partner">他</option>
+      </select>
+    </label>
+    <label>具体目标
+      <input name="title" maxlength="300" placeholder="例如：有分歧时先复述，再表达自己的看法" required>
+    </label>
+    <label>怎样算做到
+      <textarea name="detail" rows="4" maxlength="1200" placeholder="写成可观察、可执行的行为"></textarea>
+    </label>
+    <button class="button primary" type="submit">加入当前目标</button>
+  </form>
+</section>
+
+<section class="rule-grid durable-rules">
+  <article class="panel action-panel">
     <div class="panel-heading">
-      <div>
-        <span class="person-tag">他</span>
-        <h2>他必须停止的事</h2>
-      </div>
-      <span class="panel-note">解释之后必须有行动</span>
+      <div><span class="person-tag">底线</span><h2>长期共同底线</h2></div>
+      <span class="panel-note">不随某次矛盾改变</span>
     </div>
-    <div class="action-list danger-list">
-      <div class="action-item"><b>停止把“性格这样”当终点</b><p>可以解释性格，但必须补上“所以我下一步会做什么”。</p></div>
-      <div class="action-item"><b>停止沉默逃避</b><p>不愿当面说，可以明确约定稍后用文字回复。</p></div>
-      <div class="action-item"><b>停止只解释不行动</b><p>每个原因后都要对应一个小而具体的改变。</p></div>
-      <div class="action-item"><b>停止让对方猜</b><p>身体、工作、情绪有变化，主动说明，不一直等人追问。</p></div>
-      <div class="action-item"><b>停止随意改动对方的东西</b><p>觉得不好用，可以提建议，但先询问再拆、再改。</p></div>
-      <div class="action-item"><b>停止碎片化念叨成本</b><p>水电、预算集中讨论，不在日常用碎碎念制造压力。</p></div>
+    <div id="boundaryList" class="action-list danger-list empty-state">正在读取…</div>
+  </article>
+  <article class="panel action-panel">
+    <div class="panel-heading">
+      <div><span class="person-tag">方法</span><h2>长期沟通练习</h2></div>
+      <span class="panel-note">适用于多数场景</span>
     </div>
-
-    <div class="divider"></div>
-
-    <h3>他要开始练习的事</h3>
-    <div class="action-list growth-list">
-      <div class="action-item"><b>使用“原因 + 责任 + 行动”</b><p>“我确实慢，但我知道这会伤人，所以我会……”</p></div>
-      <div class="action-item"><b>从不阻拦变成轻度参与</b><p>不必成为同好，但要进入对方的世界一点点，给真实回应。</p></div>
-      <div class="action-item"><b>每天给一个具体正反馈</b><p>不说空泛的“挺好”，而是指出具体做得好的地方。</p></div>
-      <div class="action-item"><b>主动报告自己的状态</b><p>每天至少写一句身体、工作或情绪状态。</p></div>
-      <div class="action-item"><b>慢，也要有进度</b><p>每周完成一个小改变，不用一步到位，但不能长期停滞。</p></div>
-    </div>
+    <div id="practiceList" class="action-list growth-list empty-state">正在读取…</div>
   </article>
 </section>
 
-<section class="panel protocol-panel">
-  <div class="panel-heading">
-    <div>
-      <span class="eyebrow">共同沟通规则</span>
-      <h2>文字优先，短而具体</h2>
-    </div>
-  </div>
-  <div class="protocol-grid">
-    <div><span>01</span><b>一次只谈一件事</b><p>不把性、婆家、工作、钱和旧账一次全部倒出来。</p></div>
-    <div><span>02</span><b>先事实，再感受</b><p>先写发生了什么，再写自己的感受和需求。</p></div>
-    <div><span>03</span><b>声音变大就暂停</b><p>暂停不是冷暴力，要写明多久后回来继续。</p></div>
-    <div><span>04</span><b>不在深夜做大谈判</b><p>疲惫时只记录，不解决关系大问题。</p></div>
-    <div><span>05</span><b>旧账进停车场</b><p>旧伤可以谈，但不借眼前小事进行总清算。</p></div>
-    <div><span>06</span><b>每周只改一个点</b><p>降低目标，才能真正形成新习惯。</p></div>
-  </div>
-</section>
+<details class="panel archived-actions">
+  <summary>查看已暂停、已完成和已归档目标</summary>
+  <div id="actionHistory" class="dynamic-action-list empty-state">还没有历史目标</div>
+</details>
 
 <section class="cta-band">
   <div>
-    <h2>第一周只做三件事</h2>
-    <p>我：不嘲讽、不人格贬低、上头就暂停。<br>他：不把“性格这样”当终点，必须补一个行动。<br>共同：每天写三行，不当场辩论。</p>
+    <h2>复盘产生目标，行动清单管理生命周期</h2>
+    <p>AI 每次只推荐一个下期重点；你们决定是否采纳，完成后留下历史证据。</p>
   </div>
-  <a class="button primary" href="/journal">开始第一个月记录</a>
+  <div class="cta-actions">
+    <a class="button subtle" href="/chat">去盖洛普对话</a>
+    <a class="button primary" href="/journal">去每日记录</a>
+  </div>
 </section>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='actions.js', v=app_version) }}"></script>{% endblock %}
