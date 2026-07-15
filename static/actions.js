@@ -1,6 +1,5 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 
-const OWNER_LABELS = { both: "共同", me: "我", partner: "他" };
 const STATUS_LABELS = {
   suggested: "AI 建议",
   active: "进行中",
@@ -10,10 +9,18 @@ const STATUS_LABELS = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
+  setupActionTabs();
+  setupActionDisclosure();
   $("#actionForm").addEventListener("submit", createGoal);
   document.addEventListener("click", handleActionClick);
   loadActions();
 });
+
+function setupActionDisclosure() {
+  if (window.matchMedia("(max-width: 660px)").matches) {
+    $("#actionCreateDisclosure").open = false;
+  }
+}
 
 async function loadActions() {
   try {
@@ -24,7 +31,7 @@ async function loadActions() {
     const goals = items.filter((item) => item.kind === "goal");
     const current = goals.filter((item) => ["suggested", "active"].includes(item.status));
     const history = goals.filter((item) => !["suggested", "active"].includes(item.status));
-    $("#activeGoalCount").textContent = `${current.length} 项`;
+    $("#activeGoalCount").textContent = String(current.length);
     renderGoals($("#goalList"), current, "还没有当前目标。可手动添加，或从 AI 复盘中生成。");
     renderGoals($("#actionHistory"), history, "还没有历史目标");
   } catch (error) {
@@ -64,7 +71,7 @@ function goalCard(item) {
   return `
     <article class="goal-card status-${escapeHtml(item.status)}">
       <div class="goal-meta">
-        <span>${escapeHtml(OWNER_LABELS[item.owner] || item.owner)}</span>
+        <span>${escapeHtml(item.owner)}</span>
         <span>${escapeHtml(STATUS_LABELS[item.status] || item.status)}</span>
         <span>${escapeHtml(sourceLabel(item.source))}</span>
       </div>
@@ -73,6 +80,23 @@ function goalCard(item) {
       <div class="goal-actions">${goalButtons(item)}</div>
     </article>
   `;
+}
+
+function setupActionTabs() {
+  document.querySelectorAll("[data-action-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelectorAll("[data-action-view]").forEach((item) => {
+        const active = item.dataset.actionView === button.dataset.actionView;
+        item.classList.toggle("active", active);
+        item.setAttribute("aria-selected", String(active));
+      });
+      document.querySelectorAll("[data-action-panel]").forEach((panel) => {
+        const active = panel.dataset.actionPanel === button.dataset.actionView;
+        panel.classList.toggle("active", active);
+        panel.hidden = !active;
+      });
+    });
+  });
 }
 
 function goalButtons(item) {
@@ -103,6 +127,8 @@ async function createGoal(event) {
       }),
     });
     form.reset();
+    const disclosure = form.closest("details");
+    if (disclosure && window.matchMedia("(max-width: 660px)").matches) disclosure.open = false;
     showToast("已加入当前目标");
     await loadActions();
   } catch (error) {

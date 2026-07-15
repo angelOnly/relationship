@@ -2,6 +2,11 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 const MODEL_STORAGE_KEY = "relationship-ai-model-v1";
+const PARTICIPANTS = [
+  { id: "xiaoli", name: "小娌", formId: "#xiaoliForm", stateId: "#xiaoliSaveState" },
+  { id: "xiaoyuan", name: "小元", formId: "#xiaoyuanForm", stateId: "#xiaoyuanSaveState" },
+];
+const PARTICIPANT_BY_ID = Object.fromEntries(PARTICIPANTS.map((item) => [item.id, item]));
 const FOLLOW_UP_LABELS = {
   none: "只记录",
   communicate: "需要表达或倾听",
@@ -19,6 +24,9 @@ const state = {
 
 document.addEventListener("DOMContentLoaded", () => {
   setupTabs();
+  setupDailyTabs();
+  setupEntryStepTabs();
+  setupMobileDisclosures();
   setupDateAndMonth();
   setupForms();
   setupToolbar();
@@ -29,6 +37,54 @@ document.addEventListener("DOMContentLoaded", () => {
 function setupTabs() {
   $$(".tab").forEach((tab) => {
     tab.addEventListener("click", () => activateTab(tab.dataset.tab));
+  });
+}
+
+function setupDailyTabs() {
+  $$('[data-daily-view]').forEach((button) => {
+    button.addEventListener("click", () => activateDailyView(button.dataset.dailyView));
+  });
+}
+
+function setupEntryStepTabs() {
+  $$('[data-entry-view]').forEach((button) => {
+    button.addEventListener("click", () => activateEntryStep(button));
+  });
+}
+
+function activateEntryStep(button) {
+  const form = button.closest(".entry-form");
+  if (!form) return;
+  $$('[data-entry-view]', form).forEach((item) => {
+    const active = item.dataset.entryView === button.dataset.entryView;
+    item.classList.toggle("active", active);
+    item.setAttribute("aria-selected", String(active));
+  });
+  $$('[data-entry-panel]', form).forEach((panel) => {
+    const active = panel.dataset.entryPanel === button.dataset.entryView;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
+  });
+}
+
+function setupMobileDisclosures() {
+  if (!window.matchMedia("(max-width: 660px)").matches) return;
+  ["#monthController", "#journalUtilities"].forEach((selector) => {
+    const disclosure = $(selector);
+    if (disclosure) disclosure.open = false;
+  });
+}
+
+function activateDailyView(name) {
+  $$('[data-daily-view]').forEach((item) => {
+    const active = item.dataset.dailyView === name;
+    item.classList.toggle("active", active);
+    item.setAttribute("aria-selected", String(active));
+  });
+  $$('[data-daily-panel]').forEach((panel) => {
+    const active = panel.dataset.dailyPanel === name;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
   });
 }
 
@@ -45,9 +101,11 @@ function setupDateAndMonth() {
   const datePicker = $("#datePicker");
   monthPicker.value = state.month;
   datePicker.value = state.date;
+  updateMonthSummary();
 
   monthPicker.addEventListener("change", () => {
     state.month = monthPicker.value || currentMonth();
+    updateMonthSummary();
     if (!datePicker.value.startsWith(state.month)) {
       const today = localDateString(new Date());
       datePicker.value = today.startsWith(state.month) ? today : `${state.month}-01`;
@@ -63,6 +121,7 @@ function setupDateAndMonth() {
     if (state.date) {
       state.month = state.date.slice(0, 7);
       monthPicker.value = state.month;
+      updateMonthSummary();
     }
   });
 
@@ -75,6 +134,7 @@ function shiftMonth(delta) {
   const d = new Date(year, month - 1 + delta, 1);
   state.month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   $("#monthPicker").value = state.month;
+  updateMonthSummary();
   const today = localDateString(new Date());
   state.date = today.startsWith(state.month) ? today : `${state.month}-01`;
   $("#datePicker").value = state.date;
@@ -84,8 +144,9 @@ function shiftMonth(delta) {
 }
 
 function setupForms() {
-  $("#meForm").addEventListener("submit", (event) => saveEntry(event, "me"));
-  $("#partnerForm").addEventListener("submit", (event) => saveEntry(event, "partner"));
+  PARTICIPANTS.forEach((participant) => {
+    $(participant.formId).addEventListener("submit", (event) => saveEntry(event, participant.id));
+  });
   $$('[data-delete]').forEach((button) => {
     button.addEventListener("click", () => deleteEntry(button.dataset.delete));
   });
@@ -151,13 +212,12 @@ async function loadDay() {
   state.date = $("#datePicker").value || localDateString(new Date());
   state.month = state.date.slice(0, 7);
   $("#monthPicker").value = state.month;
+  updateMonthSummary();
   try {
-    const [me, partner] = await Promise.all([
-      fetchJson(`/api/entries/${state.date}/me`),
-      fetchJson(`/api/entries/${state.date}/partner`),
-    ]);
-    fillForm("me", me);
-    fillForm("partner", partner);
+    const entries = await Promise.all(
+      PARTICIPANTS.map((participant) => fetchJson(`/api/entries/${state.date}/${participant.id}`)),
+    );
+    entries.forEach((entry) => fillForm(entry.participant.id, entry));
     await loadAiReview("daily", state.date, "#dailyAiReviewResult");
     showToast(`已打开 ${state.date} 的记录`);
   } catch (error) {
@@ -165,25 +225,31 @@ async function loadDay() {
   }
 }
 
-function fillForm(person, data) {
-  const form = person === "me" ? $("#meForm") : $("#partnerForm");
+function updateMonthSummary() {
+  const label = $("#monthSummaryLabel");
+  if (label) label.textContent = state.month;
+}
+
+function fillForm(participantId, data) {
+  const participant = PARTICIPANT_BY_ID[participantId];
+  const form = $(participant.formId);
   ["appreciation", "event", "feeling", "need", "response", "repair_request", "follow_up"].forEach((name) => {
     form.elements[name].value = data[name] ?? (name === "follow_up" ? "none" : "");
   });
   const revision = Number(data.revision || 0);
   setSaveState(
-    person,
+    participantId,
     data.updated_at ? `已保存 ${formatTime(data.updated_at)} · 修订 ${revision}` : "未保存",
     Boolean(data.updated_at),
   );
 }
 
-async function saveEntry(event, person) {
+async function saveEntry(event, participantId) {
   event.preventDefault();
   const form = event.currentTarget;
   const payload = {
     entry_date: $("#datePicker").value,
-    person,
+    participant_id: participantId,
     appreciation: form.elements.appreciation.value,
     event: form.elements.event.value,
     feeling: form.elements.feeling.value,
@@ -198,19 +264,19 @@ async function saveEntry(event, person) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    setSaveState(person, `已保存 ${formatTime(saved.updated_at)} · 修订 ${saved.revision}`, true);
-    showToast(person === "me" ? "我的记录已保存" : "他的记录已保存");
+    setSaveState(participantId, `已保存 ${formatTime(saved.updated_at)} · 修订 ${saved.revision}`, true);
+    showToast(`${PARTICIPANT_BY_ID[participantId].name}的记录已保存`);
     await loadHistory();
   } catch (error) {
     showToast(error.message || "保存失败");
   }
 }
 
-async function deleteEntry(person) {
-  const label = person === "me" ? "我的" : "他的";
-  if (!confirm(`确定清空 ${state.date} ${label}记录吗？历史修订仍会保留在备份中。`)) return;
-  await fetchJson(`/api/entries/${state.date}/${person}`, { method: "DELETE" });
-  fillForm(person, await fetchJson(`/api/entries/${state.date}/${person}`));
+async function deleteEntry(participantId) {
+  const name = PARTICIPANT_BY_ID[participantId].name;
+  if (!confirm(`确定清空 ${state.date} ${name}的记录吗？历史修订仍会保留在备份中。`)) return;
+  await fetchJson(`/api/entries/${state.date}/${participantId}`, { method: "DELETE" });
+  fillForm(participantId, await fetchJson(`/api/entries/${state.date}/${participantId}`));
   await loadHistory();
   showToast("已清空当天记录");
 }
@@ -244,7 +310,7 @@ function renderHistory(entries) {
   container.innerHTML = entries.map((entry) => `
     <article class="history-card">
       <div class="history-head">
-        <strong>${escapeHtml(entry.entry_date)} · ${entry.person === "me" ? "我写的" : "他写的"}</strong>
+        <strong>${escapeHtml(entry.entry_date)} · ${escapeHtml(entry.participant?.name || "未命名")}</strong>
         <span class="category-pill follow-${escapeHtml(entry.follow_up)}">${escapeHtml(FOLLOW_UP_LABELS[entry.follow_up] || entry.follow_up)} · 修订 ${Number(entry.revision || 1)}</span>
       </div>
       <div class="history-body">
@@ -277,7 +343,16 @@ async function loadWeeks() {
   const byWeek = Object.fromEntries(existing.map((item) => [item.week_no, item]));
   const grid = $("#weeklyGrid");
   if (!grid) return;
-  grid.innerHTML = [1, 2, 3, 4, 5].map((week) => weekForm(week, byWeek[week] || {})).join("");
+  const activeWeek = currentWeekForMonth();
+  grid.innerHTML = `
+    <nav class="section-tabs week-section-tabs" aria-label="选择周次" role="tablist">
+      ${[1, 2, 3, 4, 5].map((week) => `<button class="section-tab ${week === activeWeek ? "active" : ""}" type="button" data-week-view="${week}" role="tab" aria-selected="${week === activeWeek}">第 ${week} 周</button>`).join("")}
+    </nav>
+    ${[1, 2, 3, 4, 5].map((week) => weekForm(week, byWeek[week] || {}, week === activeWeek)).join("")}
+  `;
+  $$('[data-week-view]', grid).forEach((button) => {
+    button.addEventListener("click", () => activateWeekView(Number(button.dataset.weekView), grid));
+  });
   $$(".week-form", grid).forEach((form) => form.addEventListener("submit", saveWeek));
   $$('[data-ai-week]', grid).forEach((button) => {
     const week = Number(button.dataset.aiWeek);
@@ -290,9 +365,27 @@ async function loadWeeks() {
   )));
 }
 
-function weekForm(week, data) {
+function currentWeekForMonth() {
+  const current = state.date.startsWith(state.month) ? Number(state.date.slice(8, 10)) : 1;
+  return Math.min(5, Math.max(1, Math.floor((current - 1) / 7) + 1));
+}
+
+function activateWeekView(week, root) {
+  $$('[data-week-view]', root).forEach((button) => {
+    const active = Number(button.dataset.weekView) === week;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  $$('[data-week-panel]', root).forEach((panel) => {
+    const active = Number(panel.dataset.weekPanel) === week;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
+  });
+}
+
+function weekForm(week, data, active) {
   return `
-    <form class="panel week-form" data-week="${week}">
+    <form class="panel week-form compact-tab-panel ${active ? "active" : ""}" data-week="${week}" data-week-panel="${week}" ${active ? "" : "hidden"}>
       <div class="panel-heading">
         <div><span class="eyebrow">${state.month}</span><h3>第 ${week} 周小结</h3></div>
         <span class="save-state">${data.updated_at ? `已保存 ${formatTime(data.updated_at)} · 修订 ${Number(data.revision || 1)}` : "未保存"}</span>
@@ -300,8 +393,8 @@ function weekForm(week, data) {
       <div class="week-fields">
         <label>本周值得保留的时刻<textarea name="highlights" rows="3">${escapeHtml(data.highlights || "")}</textarea></label>
         <label>重复出现的互动模式<textarea name="recurring_pattern" rows="3">${escapeHtml(data.recurring_pattern || "")}</textarea></label>
-        <label>我这一周的觉察或调整<textarea name="my_learning" rows="3">${escapeHtml(data.my_learning || "")}</textarea></label>
-        <label>我看见对方的努力或需要<textarea name="partner_signal" rows="3">${escapeHtml(data.partner_signal || "")}</textarea></label>
+        <label>本周出现的觉察或调整<textarea name="observed_adjustment" rows="3">${escapeHtml(data.observed_adjustment || "")}</textarea></label>
+        <label>看见小娌与小元各自的努力或需要<textarea name="participant_signals" rows="3">${escapeHtml(data.participant_signals || "")}</textarea></label>
         <label>下周唯一关注点<textarea name="next_focus" rows="3" placeholder="只写一个重点">${escapeHtml(data.next_focus || "")}</textarea></label>
       </div>
       <div class="form-actions">
@@ -322,8 +415,8 @@ async function saveWeek(event) {
     week_no: weekNo,
     highlights: form.elements.highlights.value,
     recurring_pattern: form.elements.recurring_pattern.value,
-    my_learning: form.elements.my_learning.value,
-    partner_signal: form.elements.partner_signal.value,
+    observed_adjustment: form.elements.observed_adjustment.value,
+    participant_signals: form.elements.participant_signals.value,
     next_focus: form.elements.next_focus.value,
   };
   try {
@@ -432,32 +525,32 @@ function renderAiReview(review, target) {
   const section = (label, value) => value ? `
     <div class="ai-review-section"><b>${label}</b><p>${escapeHtml(value)}</p></div>
   ` : "";
-  const actions = Array.isArray(review.actions) && review.actions.length
-    ? `<div class="ai-review-section"><b>接下来这样做</b><ol>${review.actions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol></div>`
+  const participants = Array.isArray(review.participants) ? review.participants : [];
+  const interaction = review.interaction || {};
+  const actions = Array.isArray(interaction.actions) && interaction.actions.length
+    ? `<div class="ai-review-section"><b>接下来这样做</b><ol>${interaction.actions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol></div>`
     : "";
   target.className = "ai-review-result completed";
   target.innerHTML = `
     <div class="ai-score-grid">
-      ${score("我的行为", review.score_me)}
-      ${score("他的行为", review.score_partner)}
-      ${score("互动质量", review.relationship_score)}
+      ${participants.map((item) => score(`${escapeHtml(item.participant?.name)}行为`, item.score)).join("")}
+      ${score("互动质量", interaction.score)}
     </div>
-    ${section("本期结论", review.summary)}
+    ${section("本期结论", interaction.summary)}
     <div class="ai-review-columns">
-      ${section("给我的反馈", review.feedback_me)}
-      ${section("给他的反馈", review.feedback_partner)}
+      ${participants.map((item) => section(`给${escapeHtml(item.participant?.name)}的反馈`, item.feedback)).join("")}
     </div>
-    ${section("进步证据", review.what_improved)}
-    ${section("需要警惕", review.risk_pattern)}
-    <div class="adjustment-goal"><span>下期唯一目标</span><strong>${escapeHtml(review.adjustment_goal || "暂无")}</strong><a href="/actions">在行动清单中管理</a></div>
+    ${section("进步证据", interaction.what_improved)}
+    ${section("需要警惕", interaction.risk_pattern)}
+    <div class="adjustment-goal"><span>下期唯一目标</span><strong>${escapeHtml(interaction.adjustment_goal || "暂无")}</strong><a href="/actions">在行动清单中管理</a></div>
     ${actions}
-    ${section("可以直接这样说", review.conversation_example)}
-    <p class="review-meta">${escapeHtml(review.confidence || "")} · ${escapeHtml(review.model_name || "默认模型")} · 第 ${Number(review.revision || 1)} 版 · ${escapeHtml(formatTime(review.updated_at))}</p>
+    ${section("可以直接这样说", interaction.conversation_example)}
+    <p class="review-meta">${escapeHtml(interaction.confidence || "")} · ${escapeHtml(review.model_name || "默认模型")} · 第 ${Number(review.revision || 1)} 版 · ${escapeHtml(formatTime(review.updated_at))}</p>
   `;
 }
 
-function setSaveState(person, text, saved) {
-  const el = person === "me" ? $("#meSaveState") : $("#partnerSaveState");
+function setSaveState(participantId, text, saved) {
+  const el = $(PARTICIPANT_BY_ID[participantId].stateId);
   el.textContent = text;
   el.classList.toggle("saved", saved);
 }

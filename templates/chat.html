@@ -5,7 +5,7 @@
   <div>
     <span class="eyebrow">少量提问 · 自动分析 · 长期复盘</span>
     <h1>先看见彼此在保护什么</h1>
-    <p>说一件刚发生的具体事情。助手会根据小狸与小元的才干画像，只追问必要信息，再回答内在期待、才干状态、正确沟通方式和本次行为反馈。</p>
+    <p>说一件刚发生的具体事情。助手会根据小娌与小元的才干画像，只追问必要信息，再回答内在期待、才干状态、正确沟通方式和本次行为反馈。</p>
   </div>
   <aside class="principle-card chat-principle">
     <strong>记忆原则</strong>
@@ -13,14 +13,28 @@
   </aside>
 </section>
 
+<nav class="section-tabs chat-mobile-tabs" aria-label="盖洛普页面分区" role="tablist">
+  <button class="section-tab active" type="button" data-chat-view="conversation" role="tab" aria-selected="true">对话</button>
+  <button class="section-tab" type="button" data-chat-view="progress" role="tab" aria-selected="false">进步趋势</button>
+  <button class="section-tab" type="button" data-chat-view="memory" role="tab" aria-selected="false">复盘库</button>
+</nav>
+
 <section class="chat-layout">
-  <div class="panel conversation-panel">
+  <div class="panel conversation-panel active" data-chat-panel="conversation">
     <div class="panel-heading chat-heading">
       <div>
         <span class="eyebrow">盖洛普技能已注入</span>
         <h2>场景复盘对话</h2>
       </div>
       <div class="chat-heading-actions">
+        <label class="model-picker speaker-picker" for="chatSpeaker">
+          <span>本次记录者</span>
+          <select id="chatSpeaker">
+            <option value="xiaoli">小娌</option>
+            <option value="xiaoyuan">小元</option>
+          </select>
+          <small>代词按所选姓名解析</small>
+        </label>
         <label class="model-picker compact-model-picker" for="chatModel">
           <span>本次模型</span>
           <select id="chatModel"><option value="">正在加载模型…</option></select>
@@ -35,20 +49,20 @@
         <div class="message-avatar">析</div>
         <div class="message-bubble">
           <b>从一件具体的事开始</b>
-          <div class="message-copy">你可以直接讲发生了什么、你做了什么、对方怎么回应。信息不够时，我最多追问三个短问题，不需要你填写评分表。</div>
+          <div class="message-copy">请先选择本次记录者，再直接写小娌与小元发生了什么、各自说了什么或做了什么。信息不够时，助手最多追问三个短问题，不需要填写评分表。</div>
         </div>
       </article>
     </div>
 
     <div class="prompt-chips" aria-label="示例问题">
-      <button type="button" data-prompt="刚才我们因为一件小事起了冲突，事情是……">复盘刚才的冲突</button>
-      <button type="button" data-prompt="我想知道这次我们各自真正期待的是什么。事情是……">看双方内在期待</button>
-      <button type="button" data-prompt="这次我说了……做了……请反馈我的行为有没有进步。">看我的行为进步</button>
+      <button type="button" data-prompt="刚才小娌与小元因为一件小事起了冲突，事情是……">复盘刚才的冲突</button>
+      <button type="button" data-prompt="请分析这次小娌与小元各自真正期待的是什么。事情是……">看双方内在期待</button>
+      <button type="button" data-prompt="这次小娌说了……小元回应了……请分别反馈两个人的行为变化。">看双方行为变化</button>
     </div>
 
     <form id="chatForm" class="chat-composer">
       <label class="sr-only" for="chatInput">描述这次场景</label>
-      <textarea id="chatInput" rows="4" maxlength="5000" placeholder="例如：昨晚我想聊工作上的委屈，他很快给了解决方案，然后去做别的事。我当时说……"></textarea>
+      <textarea id="chatInput" rows="4" maxlength="5000" placeholder="例如：昨晚小娌想聊工作上的委屈，小元很快给了解决方案，然后去做别的事。小娌当时说……"></textarea>
       <div class="composer-footer">
         <span id="chatStatus" class="muted">一次只分析一个具体事件</span>
         <button class="button primary" id="sendChat" type="submit">发送并分析</button>
@@ -57,16 +71,16 @@
   </div>
 
   <aside class="insight-sidebar">
-    <section class="panel progress-panel">
+    <section class="panel progress-panel" data-chat-panel="progress">
       <div class="panel-heading compact-heading">
         <div><span class="eyebrow">自动反馈</span><h2>进步趋势</h2></div>
       </div>
       <div id="progressSummary" class="progress-summary empty-state">完成第一条分析后显示趋势</div>
-      <div id="progressBars" class="progress-bars" aria-label="最近行为评分趋势"></div>
+      <div id="progressBars" class="participant-progress-list" aria-label="小娌与小元最近行为评分趋势"></div>
       <p class="microcopy">分数只评价当次可观察行为，不评价人格或感情。</p>
     </section>
 
-    <section class="panel memory-panel">
+    <section class="panel memory-panel" data-chat-panel="memory">
       <div class="panel-heading compact-heading">
         <div><span class="eyebrow">只存精炼结论</span><h2>长期复盘库</h2></div>
         <span class="muted" id="recordCount">0 条</span>

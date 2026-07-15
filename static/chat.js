@@ -3,9 +3,17 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 const STORAGE_KEY = "relationship-gallup-chat-v1";
 const MODEL_STORAGE_KEY = "relationship-ai-model-v1";
+const SPEAKER_STORAGE_KEY = "relationship-chat-speaker-v1";
+const PARTICIPANTS = [
+  { id: "xiaoli", name: "小娌" },
+  { id: "xiaoyuan", name: "小元" },
+];
+const PARTICIPANT_BY_ID = Object.fromEntries(PARTICIPANTS.map((item) => [item.id, item]));
 const state = loadState();
 
 document.addEventListener("DOMContentLoaded", () => {
+  setupChatTabs();
+  setupSpeakerPicker();
   bindChat();
   renderStoredConversation();
   setupModelPicker();
@@ -30,6 +38,34 @@ function bindChat() {
   $("#sceneFilter").addEventListener("change", loadRecords);
 }
 
+function setupSpeakerPicker() {
+  const select = $("#chatSpeaker");
+  const stored = localStorage.getItem(SPEAKER_STORAGE_KEY);
+  select.value = PARTICIPANT_BY_ID[stored] ? stored : "xiaoli";
+  select.addEventListener("change", () => {
+    localStorage.setItem(SPEAKER_STORAGE_KEY, select.value);
+  });
+}
+
+function currentSpeakerId() {
+  return PARTICIPANT_BY_ID[$("#chatSpeaker")?.value]?.id || "xiaoli";
+}
+
+function setupChatTabs() {
+  $$('[data-chat-view]').forEach((button) => {
+    button.addEventListener("click", () => {
+      $$('[data-chat-view]').forEach((item) => {
+        const active = item.dataset.chatView === button.dataset.chatView;
+        item.classList.toggle("active", active);
+        item.setAttribute("aria-selected", String(active));
+      });
+      $$('[data-chat-panel]').forEach((panel) => {
+        panel.classList.toggle("active", panel.dataset.chatPanel === button.dataset.chatView);
+      });
+    });
+  });
+}
+
 async function sendMessage(event) {
   event.preventDefault();
   const input = $("#chatInput");
@@ -37,33 +73,57 @@ async function sendMessage(event) {
   if (!message || state.pending) return;
 
   const priorHistory = state.history.slice(-12);
-  state.history.push({ role: "user", content: message });
-  appendMessage("user", message);
+  const speakerId = currentSpeakerId();
+  state.history.push({ role: "user", content: message, participant_id: speakerId });
+  appendMessage("user", message, false, speakerId);
   input.value = "";
   setPending(true, "正在结合才干画像和历史案例分析……");
   persistState();
 
+  const assistantArticle = appendMessage("assistant", "");
+  let streamedReply = "";
+  let finalData = null;
   try {
-    const data = await fetchJson("/api/chat", {
+    await streamJsonEvents("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         conversation_id: state.conversationId,
         turn_id: makeId(),
+        speaker_id: speakerId,
         message,
         history: priorHistory,
         model: $("#chatModel")?.value || "",
       }),
+    }, (event) => {
+      if (event.type === "meta") {
+        state.conversationId = event.conversation_id || state.conversationId;
+        setPending(true, "模型正在输出分析……");
+      } else if (event.type === "delta") {
+        streamedReply += event.text || "";
+        updateMessage(assistantArticle, streamedReply);
+      } else if (event.type === "status") {
+        setPending(true, event.message || "正在整理结果……");
+      } else if (event.type === "final") {
+        finalData = event;
+        streamedReply = event.reply || streamedReply;
+        updateMessage(assistantArticle, streamedReply);
+        if (event.analysis_saved) markMessageSaved(assistantArticle);
+      } else if (event.type === "error") {
+        throw new Error(event.error || "请求失败，请稍后重试。");
+      }
     });
-    state.conversationId = data.conversation_id;
-    state.history.push({ role: "assistant", content: data.reply });
-    appendMessage("assistant", data.reply, data.analysis_saved);
+
+    if (!finalData) throw new Error("模型流式输出没有正常结束。");
+    state.conversationId = finalData.conversation_id || state.conversationId;
+    state.history.push({ role: "assistant", content: streamedReply });
     persistState();
-    if (data.analysis_saved) {
+    if (finalData.analysis_saved) {
       showToast("本次精炼分析已写入长期复盘库");
       await Promise.all([loadRecords(), loadProgress()]);
     }
   } catch (error) {
+    if (!streamedReply) assistantArticle.remove();
     appendMessage("error", error.message || "请求失败，请稍后重试。");
   } finally {
     setPending(false, "一次只分析一个具体事件");
@@ -99,17 +159,25 @@ function updateModelHint(catalog, key, target) {
   target.textContent = item.key === item.model ? `模型标识：${item.model}` : `接口实际调用：${item.model}`;
 }
 
-function appendMessage(role, content, saved = false) {
+function appendMessage(role, content, saved = false, participantId = "") {
   const article = document.createElement("article");
   const type = role === "user" ? "user" : role === "error" ? "error" : "assistant";
   article.className = `chat-message ${type}-message`;
 
   const avatar = document.createElement("div");
   avatar.className = "message-avatar";
-  avatar.textContent = type === "user" ? "我" : type === "error" ? "!" : "析";
+  const participant = PARTICIPANT_BY_ID[participantId] || PARTICIPANT_BY_ID.xiaoli;
+  avatar.textContent = type === "user" ? participant.name.slice(-1) : type === "error" ? "!" : "析";
+  if (type === "user") avatar.title = participant.name;
 
   const bubble = document.createElement("div");
   bubble.className = "message-bubble";
+  if (type === "user") {
+    const author = document.createElement("span");
+    author.className = "message-author";
+    author.textContent = participant.name;
+    bubble.appendChild(author);
+  }
   const copy = document.createElement("div");
   copy.className = "message-copy";
   copy.textContent = content;
@@ -123,10 +191,27 @@ function appendMessage(role, content, saved = false) {
   article.append(avatar, bubble);
   $("#chatMessages").appendChild(article);
   article.scrollIntoView({ behavior: "smooth", block: "end" });
+  return article;
+}
+
+function updateMessage(article, content) {
+  const copy = $(".message-copy", article);
+  if (!copy) return;
+  copy.textContent = content || " ";
+  article.scrollIntoView({ behavior: "smooth", block: "end" });
+}
+
+function markMessageSaved(article) {
+  const bubble = $(".message-bubble", article);
+  if (!bubble || $(".saved-badge", bubble)) return;
+  const badge = document.createElement("span");
+  badge.className = "saved-badge";
+  badge.textContent = "已精炼入库";
+  bubble.appendChild(badge);
 }
 
 function renderStoredConversation() {
-  state.history.forEach((item) => appendMessage(item.role, item.content));
+  state.history.forEach((item) => appendMessage(item.role, item.content, false, item.participant_id));
 }
 
 function resetConversation() {
@@ -163,29 +248,45 @@ function renderRecords(records) {
     return;
   }
   container.className = "memory-list";
-  container.innerHTML = records.map((record) => `
+  container.innerHTML = records.map(memoryCard).join("");
+  $$('[data-delete-record]', container).forEach((button) => {
+    button.addEventListener("click", () => deleteRecord(button.dataset.deleteRecord));
+  });
+}
+
+function memoryCard(record) {
+  const scores = (record.participants || [])
+    .filter((item) => item.behavior?.score != null)
+    .map((item) => `${escapeHtml(item.participant?.name)} ${Number(item.behavior.score)}`)
+    .join(" · ");
+  const participantDetails = (record.participants || []).map((item) => `
+    <section class="participant-memory">
+      <h4>${escapeHtml(item.participant?.name || "未命名")}</h4>
+      ${detailRow("本次角色", item.role_in_event)}
+      ${detailRow("内在期待", item.inner_expectation)}
+      ${detailRow("才干状态", item.talent_state)}
+      ${detailRow("行为反馈", item.behavior?.feedback)}
+      ${detailRow("评分依据", item.behavior?.score_reason)}
+    </section>
+  `).join("");
+  const interaction = record.interaction || {};
+  return `
     <details class="memory-card">
       <summary>
         <span class="memory-title"><b>${escapeHtml(record.question_summary)}</b><small>${escapeHtml(formatDate(record.created_at))} · ${escapeHtml(record.scene_type || "其他")}</small></span>
-        ${record.behavior_score ? `<span class="score-badge">${record.behavior_score}/10</span>` : ""}
+        ${scores ? `<span class="score-badge">${scores}</span>` : ""}
       </summary>
       <div class="memory-detail">
-        ${detailRow("你的期待", record.inner_expectation_me)}
-        ${detailRow("对方期待", record.inner_expectation_partner)}
-        ${detailRow("你的才干状态", record.talent_state_me)}
-        ${detailRow("对方才干状态", record.talent_state_partner)}
-        ${detailRow("建议怎么说", record.recommended_wording)}
-        ${detailRow("行为反馈", record.behavior_feedback)}
-        ${detailRow("进步判断", record.progress_assessment)}
-        ${detailRow("下一步", record.next_action)}
+        ${participantDetails}
+        ${detailRow("互动循环", interaction.loop)}
+        ${detailRow("建议怎么说", interaction.recommended_wording)}
+        ${detailRow("进步判断", interaction.progress_assessment)}
+        ${detailRow("下一步", interaction.next_action)}
         <div class="keyword-row">${(record.keywords || []).map((keyword) => `<span>${escapeHtml(keyword)}</span>`).join("")}</div>
         <button class="delete-memory" type="button" data-delete-record="${record.id}">删除这条</button>
       </div>
     </details>
-  `).join("");
-  $$('[data-delete-record]', container).forEach((button) => {
-    button.addEventListener("click", () => deleteRecord(button.dataset.deleteRecord));
-  });
+  `;
 }
 
 async function deleteRecord(id) {
@@ -206,17 +307,25 @@ async function loadProgress() {
 
 function renderProgress(data) {
   const summary = $("#progressSummary");
-  if (data.recent_average == null) {
+  const participants = Array.isArray(data.participants) ? data.participants : [];
+  if (!participants.some((item) => item.recent_average != null)) {
     summary.className = "progress-summary empty-state";
-    summary.textContent = "还没有可评分的完整分析";
+    summary.textContent = "小娌与小元还没有可评分的完整分析";
     $("#progressBars").innerHTML = "";
     return;
   }
-  summary.className = "progress-summary";
-  const delta = data.delta == null ? "基线建立中" : `${data.delta > 0 ? "+" : ""}${data.delta}`;
-  summary.innerHTML = `<strong>${data.recent_average}</strong><span>最近平均 / 10</span><b>${escapeHtml(data.trend)} · ${escapeHtml(delta)}</b>`;
-  $("#progressBars").innerHTML = (data.items || []).slice(-12).map((item) => `
-    <span style="--score:${Number(item.behavior_score)}" title="${escapeHtml(formatDate(item.created_at))} · ${escapeHtml(item.question_summary)} · ${item.behavior_score}/10"></span>
+  summary.className = "progress-summary participant-progress-summary";
+  summary.innerHTML = participants.map((item) => {
+    const delta = item.delta == null ? "基线建立中" : `${item.delta > 0 ? "+" : ""}${item.delta}`;
+    return `<div><span>${escapeHtml(item.participant?.name)}</span><strong>${item.recent_average ?? "—"}</strong><small>${escapeHtml(item.trend)} · ${escapeHtml(delta)}</small></div>`;
+  }).join("");
+  $("#progressBars").innerHTML = participants.map((participant) => `
+    <div class="participant-progress-row">
+      <b>${escapeHtml(participant.participant?.name)}</b>
+      <div class="progress-bars">${(participant.items || []).slice(-12).map((item) => `
+        <span style="--score:${Number(item.score)}" title="${escapeHtml(formatDate(item.created_at))} · ${escapeHtml(item.question_summary)} · ${item.score}/10"></span>
+      `).join("")}</div>
+    </div>
   `).join("");
 }
 
@@ -259,6 +368,37 @@ async function fetchJson(url, options = {}) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || `请求失败：${response.status}`);
   return body;
+}
+
+async function streamJsonEvents(url, options, onEvent) {
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `请求失败：${response.status}`);
+  }
+  if (!response.body?.getReader) {
+    const text = await response.text();
+    text.split(/\r?\n/).filter(Boolean).forEach((line) => onEvent(JSON.parse(line)));
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    let newlineIndex = buffer.indexOf("\n");
+    while (newlineIndex >= 0) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (line) onEvent(JSON.parse(line));
+      newlineIndex = buffer.indexOf("\n");
+    }
+    if (done) break;
+  }
+  const line = buffer.trim();
+  if (line) onEvent(JSON.parse(line));
 }
 
 function showToast(message) {

@@ -13,45 +13,59 @@
   </aside>
 </section>
 
-<section class="action-dashboard">
-  <article class="panel action-goals-panel">
-    <div class="panel-heading">
-      <div><span class="eyebrow">随关系阶段变化</span><h2>当前阶段目标</h2></div>
-      <span class="muted" id="activeGoalCount">0 项</span>
-    </div>
-    <div id="goalList" class="dynamic-action-list empty-state">正在读取行动目标…</div>
-  </article>
+<nav class="section-tabs action-section-tabs" aria-label="行动清单分区" role="tablist">
+  <button class="section-tab active" type="button" data-action-view="current" role="tab" aria-selected="true">当前目标 <span id="activeGoalCount">0</span></button>
+  <button class="section-tab" type="button" data-action-view="boundaries" role="tab" aria-selected="false">共同底线</button>
+  <button class="section-tab" type="button" data-action-view="practices" role="tab" aria-selected="false">长期练习</button>
+  <button class="section-tab" type="button" data-action-view="history" role="tab" aria-selected="false">历史目标</button>
+</nav>
 
-  <form class="panel action-create-form" id="actionForm">
-    <div class="panel-heading compact-heading">
-      <div><span class="eyebrow">手动增加</span><h2>添加一个当前目标</h2></div>
-    </div>
-    <label>谁来练习
-      <select name="owner">
-        <option value="both">共同</option>
-        <option value="me">我</option>
-        <option value="partner">他</option>
-      </select>
-    </label>
-    <label>具体目标
-      <input name="title" maxlength="300" placeholder="例如：有分歧时先复述，再表达自己的看法" required>
-    </label>
-    <label>怎样算做到
-      <textarea name="detail" rows="4" maxlength="1200" placeholder="写成可观察、可执行的行为"></textarea>
-    </label>
-    <button class="button primary" type="submit">加入当前目标</button>
-  </form>
+<section class="compact-tab-panel active" data-action-panel="current">
+  <div class="action-dashboard">
+    <article class="panel action-goals-panel">
+      <div class="panel-heading">
+        <div><span class="eyebrow">随关系阶段变化</span><h2>当前阶段目标</h2></div>
+      </div>
+      <div id="goalList" class="dynamic-action-list empty-state">正在读取行动目标…</div>
+    </article>
+
+    <details class="panel action-create-disclosure" id="actionCreateDisclosure" open>
+      <summary>添加一个当前目标</summary>
+      <form class="action-create-form" id="actionForm">
+        <div class="panel-heading compact-heading">
+          <div><span class="eyebrow">手动增加</span><h2>添加一个当前目标</h2></div>
+        </div>
+        <label>谁来练习
+          <select name="owner">
+            <option value="共同">共同</option>
+            <option value="小娌">小娌</option>
+            <option value="小元">小元</option>
+          </select>
+        </label>
+        <label>具体目标
+          <input name="title" maxlength="300" placeholder="例如：有分歧时先复述，再表达自己的看法" required>
+        </label>
+        <label>怎样算做到
+          <textarea name="detail" rows="4" maxlength="1200" placeholder="写成可观察、可执行的行为"></textarea>
+        </label>
+        <button class="button primary" type="submit">加入当前目标</button>
+      </form>
+    </details>
+  </div>
 </section>
 
-<section class="rule-grid durable-rules">
-  <article class="panel action-panel">
+<section class="compact-tab-panel" data-action-panel="boundaries" hidden>
+  <article class="panel action-panel compact-rule-panel">
     <div class="panel-heading">
       <div><span class="person-tag">底线</span><h2>长期共同底线</h2></div>
       <span class="panel-note">不随某次矛盾改变</span>
     </div>
     <div id="boundaryList" class="action-list danger-list empty-state">正在读取…</div>
   </article>
-  <article class="panel action-panel">
+</section>
+
+<section class="compact-tab-panel" data-action-panel="practices" hidden>
+  <article class="panel action-panel compact-rule-panel">
     <div class="panel-heading">
       <div><span class="person-tag">方法</span><h2>长期沟通练习</h2></div>
       <span class="panel-note">适用于多数场景</span>
@@ -60,10 +74,14 @@
   </article>
 </section>
 
-<details class="panel archived-actions">
-  <summary>查看已暂停、已完成和已归档目标</summary>
-  <div id="actionHistory" class="dynamic-action-list empty-state">还没有历史目标</div>
-</details>
+<section class="compact-tab-panel" data-action-panel="history" hidden>
+  <article class="panel archived-actions">
+    <div class="panel-heading compact-heading">
+      <div><span class="eyebrow">可恢复、可归档</span><h2>历史目标</h2></div>
+    </div>
+    <div id="actionHistory" class="dynamic-action-list empty-state">还没有历史目标</div>
+  </article>
+</section>
 
 <section class="cta-band">
   <div>

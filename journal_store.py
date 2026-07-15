@@ -6,11 +6,13 @@ import uuid
 from datetime import datetime
 from typing import Any, Iterable
 
+from participants import JOINT_NAME
+
 
 DAILY_SCHEMA_KEY = "universal-daily"
 WEEKLY_SCHEMA_KEY = "universal-weekly"
 MONTHLY_SCHEMA_KEY = "universal-monthly"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
     "daily": {
@@ -21,9 +23,9 @@ RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
         "fields": [
             {"name": "appreciation", "label": "值得肯定的一件具体事", "type": "text"},
             {"name": "event", "label": "今天最值得记录的一件具体事", "type": "text"},
-            {"name": "feeling", "label": "我当时的感受", "type": "text"},
-            {"name": "need", "label": "我真正重视或需要什么", "type": "text"},
-            {"name": "response", "label": "我怎么表达，对方怎么回应", "type": "text"},
+            {"name": "feeling", "label": "当时的感受", "type": "text"},
+            {"name": "need", "label": "真正重视或需要什么", "type": "text"},
+            {"name": "response", "label": "小娌与小元如何表达、回应", "type": "text"},
             {"name": "repair_request", "label": "接下来是否需要修复，以及一个具体请求", "type": "text"},
             {
                 "name": "follow_up",
@@ -48,8 +50,8 @@ RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
         "fields": [
             {"name": "highlights", "label": "本周值得保留的时刻", "type": "text"},
             {"name": "recurring_pattern", "label": "重复出现的互动模式", "type": "text"},
-            {"name": "my_learning", "label": "我这一周的觉察或调整", "type": "text"},
-            {"name": "partner_signal", "label": "我看见对方的努力或需要", "type": "text"},
+            {"name": "observed_adjustment", "label": "本周出现的觉察或调整", "type": "text"},
+            {"name": "participant_signals", "label": "看见小娌与小元各自的努力或需要", "type": "text"},
             {"name": "next_focus", "label": "下周唯一关注点", "type": "text"},
         ],
     },
@@ -96,7 +98,7 @@ def init_flexible_schema(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             record_type TEXT NOT NULL,
             period_key TEXT NOT NULL,
-            author TEXT NOT NULL DEFAULT 'joint',
+            author TEXT NOT NULL DEFAULT '共同',
             schema_key TEXT NOT NULL,
             schema_version INTEGER NOT NULL,
             data_json TEXT NOT NULL DEFAULT '{}',
@@ -132,7 +134,7 @@ def init_flexible_schema(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS action_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner TEXT NOT NULL DEFAULT 'both',
+            owner TEXT NOT NULL DEFAULT '共同',
             kind TEXT NOT NULL DEFAULT 'goal',
             title TEXT NOT NULL,
             detail TEXT NOT NULL DEFAULT '',
@@ -384,7 +386,7 @@ def create_action_item(conn: sqlite3.Connection, data: dict[str, Any]) -> dict[s
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            data.get("owner", "both"),
+            data.get("owner", JOINT_NAME),
             data.get("kind", "goal"),
             str(data.get("title", "")).strip(),
             str(data.get("detail", "")).strip(),
@@ -444,13 +446,13 @@ def upsert_ai_goal(
         INSERT INTO action_items (
             owner, kind, title, detail, status, source, source_ref,
             priority, created_at, updated_at
-        ) VALUES ('both', 'goal', ?, ?, 'suggested', ?, ?, 80, ?, ?)
+        ) VALUES (?, 'goal', ?, ?, 'suggested', ?, ?, 80, ?, ?)
         ON CONFLICT(source, source_ref) DO UPDATE SET
             title = excluded.title,
             detail = excluded.detail,
             updated_at = excluded.updated_at
         """,
-        (title, detail, source, source_ref, now, now),
+        (JOINT_NAME, title, detail, source, source_ref, now, now),
     )
 
 
@@ -506,9 +508,9 @@ def _seed_baseline_actions(conn: sqlite3.Connection) -> None:
             INSERT OR IGNORE INTO action_items (
                 owner, kind, title, detail, status, source, source_ref,
                 priority, created_at, updated_at
-            ) VALUES ('both', ?, ?, ?, 'active', 'baseline', ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, 'active', 'baseline', ?, ?, ?, ?)
             """,
-            (kind, title, detail, source_ref, priority, now, now),
+            (JOINT_NAME, kind, title, detail, source_ref, priority, now, now),
         )
 
 

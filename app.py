@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
 from journal_store import (
     RECORD_SCHEMAS,
@@ -31,6 +31,16 @@ from journal_store import (
     upsert_ai_goal,
     upsert_record,
 )
+from participants import (
+    JOINT_NAME,
+    OWNER_NAMES,
+    PARTICIPANTS,
+    PARTICIPANT_BY_ID,
+    PARTICIPANT_IDS,
+    participant_id,
+    participant_name,
+    participant_ref,
+)
 from relationship_ai import (
     AIConfigError,
     AIModelError,
@@ -39,19 +49,17 @@ from relationship_ai import (
     get_model_catalog,
     resolve_model_name,
     review_journal_period,
+    stream_relationship_analysis,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 DB_PATH = DATA_DIR / "relationship.db"
-APP_VERSION = os.getenv("APP_VERSION", "3.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "4.0.0")
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
 app.jinja_env.globals["app_version"] = APP_VERSION
-
-PEOPLE = {"me", "partner"}
-
 
 def get_conn() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -66,59 +74,34 @@ def init_db() -> None:
     with closing(get_conn()) as conn:
         conn.executescript(
             """
-            CREATE TABLE IF NOT EXISTS analysis_records (
+            CREATE TABLE IF NOT EXISTS scene_analyses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 conversation_id TEXT NOT NULL,
                 turn_id TEXT NOT NULL UNIQUE,
                 occurred_at TEXT NOT NULL DEFAULT '',
                 scene_type TEXT NOT NULL DEFAULT '其他',
-                roles TEXT NOT NULL DEFAULT '',
                 observed_facts TEXT NOT NULL DEFAULT '',
                 question_summary TEXT NOT NULL,
-                keywords TEXT NOT NULL DEFAULT '[]',
-                inner_expectation_me TEXT NOT NULL DEFAULT '',
-                inner_expectation_partner TEXT NOT NULL DEFAULT '',
-                talent_state_me TEXT NOT NULL DEFAULT '',
-                talent_state_partner TEXT NOT NULL DEFAULT '',
-                interaction_loop TEXT NOT NULL DEFAULT '',
-                communication_guidance TEXT NOT NULL DEFAULT '',
-                recommended_wording TEXT NOT NULL DEFAULT '',
-                behavior_feedback TEXT NOT NULL DEFAULT '',
-                behavior_score INTEGER CHECK(behavior_score IS NULL OR behavior_score BETWEEN 1 AND 10),
-                behavior_dimensions TEXT NOT NULL DEFAULT '{}',
-                score_reason TEXT NOT NULL DEFAULT '',
-                progress_assessment TEXT NOT NULL DEFAULT '',
-                next_action TEXT NOT NULL DEFAULT '',
-                uncertainty TEXT NOT NULL DEFAULT '',
-                confidence TEXT NOT NULL DEFAULT '',
+                keywords_json TEXT NOT NULL DEFAULT '[]',
+                participants_json TEXT NOT NULL DEFAULT '[]',
+                interaction_json TEXT NOT NULL DEFAULT '{}',
+                searchable_text TEXT NOT NULL DEFAULT '',
                 model_name TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
 
-            CREATE INDEX IF NOT EXISTS idx_analysis_created_at
-                ON analysis_records(created_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_analysis_scene
-                ON analysis_records(scene_type);
-            CREATE INDEX IF NOT EXISTS idx_analysis_score
-                ON analysis_records(behavior_score);
+            CREATE INDEX IF NOT EXISTS idx_scene_analyses_created_at
+                ON scene_analyses(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_scene_analyses_scene
+                ON scene_analyses(scene_type);
 
-            CREATE TABLE IF NOT EXISTS ai_period_reviews (
+            CREATE TABLE IF NOT EXISTS period_reviews (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 period_type TEXT NOT NULL CHECK(period_type IN ('daily', 'weekly', 'monthly')),
                 period_key TEXT NOT NULL,
-                summary TEXT NOT NULL DEFAULT '',
-                score_me INTEGER CHECK(score_me IS NULL OR score_me BETWEEN 1 AND 10),
-                score_partner INTEGER CHECK(score_partner IS NULL OR score_partner BETWEEN 1 AND 10),
-                relationship_score INTEGER CHECK(relationship_score IS NULL OR relationship_score BETWEEN 1 AND 10),
-                feedback_me TEXT NOT NULL DEFAULT '',
-                feedback_partner TEXT NOT NULL DEFAULT '',
-                what_improved TEXT NOT NULL DEFAULT '',
-                risk_pattern TEXT NOT NULL DEFAULT '',
-                adjustment_goal TEXT NOT NULL DEFAULT '',
-                actions TEXT NOT NULL DEFAULT '[]',
-                conversation_example TEXT NOT NULL DEFAULT '',
-                confidence TEXT NOT NULL DEFAULT '',
+                participants_json TEXT NOT NULL DEFAULT '[]',
+                interaction_json TEXT NOT NULL DEFAULT '{}',
                 model_name TEXT NOT NULL DEFAULT '',
                 revision INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
@@ -126,25 +109,12 @@ def init_db() -> None:
                 UNIQUE(period_type, period_key)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_ai_period_reviews_updated
-                ON ai_period_reviews(updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_period_reviews_updated
+                ON period_reviews(updated_at DESC);
             """
         )
-        _ensure_column(conn, "analysis_records", "model_name", "TEXT NOT NULL DEFAULT ''")
-        _ensure_column(conn, "ai_period_reviews", "model_name", "TEXT NOT NULL DEFAULT ''")
         init_flexible_schema(conn)
         conn.commit()
-
-
-def _ensure_column(
-    conn: sqlite3.Connection,
-    table: str,
-    column: str,
-    definition: str,
-) -> None:
-    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
-    if column not in existing:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 @app.before_request
@@ -185,6 +155,11 @@ def list_ai_models():
     return jsonify(get_model_catalog())
 
 
+@app.get("/api/participants")
+def list_participants():
+    return jsonify({"participants": [dict(item) for item in PARTICIPANTS]})
+
+
 @app.get("/api/record-schemas/<record_type>")
 def get_active_record_schema(record_type: str):
     with closing(get_conn()) as conn:
@@ -205,6 +180,10 @@ def chat_with_coach():
 
     conversation_id = normalize_identifier(data.get("conversation_id")) or uuid.uuid4().hex
     turn_id = normalize_identifier(data.get("turn_id")) or uuid.uuid4().hex
+    speaker_value = clean_text(data.get("speaker_id"))
+    speaker = participant_ref(speaker_value or "xiaoli")
+    if speaker is None:
+        return jsonify({"error": "本次记录者必须是小娌或小元。"}), 400
     history = normalize_chat_history(data.get("history"))
     memories = find_similar_analyses(message, limit=5)
 
@@ -215,6 +194,7 @@ def chat_with_coach():
             history,
             memories,
             model_name=model_name,
+            speaker=speaker,
         )
     except AIModelError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -223,6 +203,102 @@ def chat_with_coach():
     except AIServiceError as exc:
         return jsonify({"error": str(exc)}), 502
 
+    return jsonify(
+        finish_chat_turn(
+            result,
+            conversation_id,
+            turn_id,
+            model_name,
+            len(memories),
+        )
+    )
+
+
+@app.post("/api/chat/stream")
+def stream_chat_with_coach():
+    data = request.get_json(silent=True) or {}
+    message = clean_text(data.get("message"))
+    if not message:
+        return jsonify({"error": "请先写下这次发生了什么。"}), 400
+    if len(message) > 5000:
+        return jsonify({"error": "单条消息请控制在 5000 字以内。"}), 400
+
+    conversation_id = normalize_identifier(data.get("conversation_id")) or uuid.uuid4().hex
+    turn_id = normalize_identifier(data.get("turn_id")) or uuid.uuid4().hex
+    speaker_value = clean_text(data.get("speaker_id"))
+    speaker = participant_ref(speaker_value or "xiaoli")
+    if speaker is None:
+        return jsonify({"error": "本次记录者必须是小娌或小元。"}), 400
+    history = normalize_chat_history(data.get("history"))
+    memories = find_similar_analyses(message, limit=5)
+    try:
+        model_name = resolve_model_name(clean_text(data.get("model")) or None)
+    except AIModelError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except AIConfigError as exc:
+        return jsonify({"error": str(exc)}), 503
+
+    @stream_with_context
+    def generate():
+        result = None
+        try:
+            yield stream_event(
+                {
+                    "type": "meta",
+                    "conversation_id": conversation_id,
+                    "memory_count": len(memories),
+                    "model_name": model_name,
+                }
+            )
+            for event in stream_relationship_analysis(
+                message,
+                history,
+                memories,
+                model_name=model_name,
+                speaker=speaker,
+            ):
+                if event.get("type") == "delta":
+                    yield stream_event({"type": "delta", "text": event.get("text", "")})
+                elif event.get("type") == "result":
+                    result = event.get("result")
+
+            if not isinstance(result, dict):
+                raise AIServiceError("模型没有返回可用内容。")
+
+            if result.get("status") == "complete":
+                yield stream_event({"type": "status", "message": "正在写入长期复盘库…"})
+            payload = finish_chat_turn(
+                result,
+                conversation_id,
+                turn_id,
+                model_name,
+                len(memories),
+            )
+            yield stream_event({"type": "final", **payload})
+        except (AIConfigError, AIServiceError) as exc:
+            yield stream_event({"type": "error", "error": str(exc)})
+
+    return Response(
+        generate(),
+        mimetype="application/x-ndjson; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def stream_event(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
+def finish_chat_turn(
+    result: dict[str, Any],
+    conversation_id: str,
+    turn_id: str,
+    model_name: str,
+    memory_count: int,
+) -> dict[str, Any]:
     saved = None
     if result.get("status") == "complete" and isinstance(result.get("record"), dict):
         record = normalize_analysis_record(result["record"])
@@ -234,17 +310,15 @@ def chat_with_coach():
                 model_name,
             )
 
-    return jsonify(
-        {
-            "conversation_id": conversation_id,
-            "status": result.get("status", "clarifying"),
-            "reply": result.get("reply", ""),
-            "analysis_saved": bool(saved),
-            "record": saved,
-            "memory_count": len(memories),
-            "model_name": model_name,
-        }
-    )
+    return {
+        "conversation_id": conversation_id,
+        "status": result.get("status", "clarifying"),
+        "reply": result.get("reply", ""),
+        "analysis_saved": bool(saved),
+        "record": saved,
+        "memory_count": memory_count,
+        "model_name": model_name,
+    }
 
 
 @app.get("/api/analysis-records")
@@ -259,21 +333,8 @@ def list_analysis_records():
     clauses: list[str] = []
     params: list[Any] = []
     if q:
-        like = f"%{q}%"
-        searchable = [
-            "question_summary",
-            "keywords",
-            "inner_expectation_me",
-            "inner_expectation_partner",
-            "talent_state_me",
-            "talent_state_partner",
-            "communication_guidance",
-            "recommended_wording",
-            "behavior_feedback",
-            "progress_assessment",
-        ]
-        clauses.append("(" + " OR ".join(f"{column} LIKE ?" for column in searchable) + ")")
-        params.extend([like] * len(searchable))
+        clauses.append("searchable_text LIKE ?")
+        params.append(f"%{q}%")
     if scene:
         clauses.append("scene_type = ?")
         params.append(scene)
@@ -282,7 +343,7 @@ def list_analysis_records():
 
     with closing(get_conn()) as conn:
         rows = conn.execute(
-            f"SELECT * FROM analysis_records {where} ORDER BY created_at DESC LIMIT ?",
+            f"SELECT * FROM scene_analyses {where} ORDER BY created_at DESC LIMIT ?",
             params,
         ).fetchall()
     return jsonify([serialize_analysis_record(row) for row in rows])
@@ -291,7 +352,7 @@ def list_analysis_records():
 @app.delete("/api/analysis-records/<int:record_id>")
 def delete_analysis_record(record_id: int):
     with closing(get_conn()) as conn:
-        cursor = conn.execute("DELETE FROM analysis_records WHERE id = ?", (record_id,))
+        cursor = conn.execute("DELETE FROM scene_analyses WHERE id = ?", (record_id,))
         conn.commit()
     if cursor.rowcount == 0:
         return jsonify({"error": "记录不存在。"}), 404
@@ -302,43 +363,58 @@ def delete_analysis_record(record_id: int):
 def get_progress():
     with closing(get_conn()) as conn:
         rows = conn.execute(
-            """
-            SELECT id, created_at, scene_type, question_summary, behavior_score,
-                   progress_assessment
-            FROM analysis_records
-            WHERE behavior_score IS NOT NULL
-            ORDER BY created_at DESC
-            LIMIT 20
-            """
+            "SELECT * FROM scene_analyses ORDER BY created_at DESC LIMIT 100"
         ).fetchall()
-    items = [dict(row) for row in rows]
-    recent_scores = [item["behavior_score"] for item in items[:5]]
-    previous_scores = [item["behavior_score"] for item in items[5:10]]
-    recent_average = round(sum(recent_scores) / len(recent_scores), 1) if recent_scores else None
-    previous_average = round(sum(previous_scores) / len(previous_scores), 1) if previous_scores else None
-    delta = (
-        round(recent_average - previous_average, 1)
-        if recent_average is not None and previous_average is not None
-        else None
-    )
-    if delta is None:
-        trend = "暂无足够基线"
-    elif delta >= 0.5:
-        trend = "近期有进步"
-    elif delta <= -0.5:
-        trend = "近期有反复"
-    else:
-        trend = "近期基本持平"
-    return jsonify(
-        {
-            "trend": trend,
-            "recent_average": recent_average,
-            "previous_average": previous_average,
-            "delta": delta,
-            "scored_count": len(items),
-            "items": list(reversed(items)),
-        }
-    )
+    analyses = [serialize_analysis_record(row) for row in rows]
+    trends: list[dict[str, Any]] = []
+    for profile in PARTICIPANTS:
+        items: list[dict[str, Any]] = []
+        for analysis in analyses:
+            participant = analysis_participant(analysis, profile["id"])
+            score = participant.get("behavior", {}).get("score") if participant else None
+            if score is None:
+                continue
+            items.append(
+                {
+                    "id": analysis["id"],
+                    "created_at": analysis["created_at"],
+                    "scene_type": analysis["scene_type"],
+                    "question_summary": analysis["question_summary"],
+                    "score": score,
+                    "progress_assessment": analysis.get("interaction", {}).get(
+                        "progress_assessment", ""
+                    ),
+                }
+            )
+        recent_scores = [item["score"] for item in items[:5]]
+        previous_scores = [item["score"] for item in items[5:10]]
+        recent_average = round(sum(recent_scores) / len(recent_scores), 1) if recent_scores else None
+        previous_average = round(sum(previous_scores) / len(previous_scores), 1) if previous_scores else None
+        delta = (
+            round(recent_average - previous_average, 1)
+            if recent_average is not None and previous_average is not None
+            else None
+        )
+        if delta is None:
+            trend = "暂无足够基线"
+        elif delta >= 0.5:
+            trend = "近期有进步"
+        elif delta <= -0.5:
+            trend = "近期有反复"
+        else:
+            trend = "近期基本持平"
+        trends.append(
+            {
+                "participant": dict(profile),
+                "trend": trend,
+                "recent_average": recent_average,
+                "previous_average": previous_average,
+                "delta": delta,
+                "scored_count": len(items),
+                "items": list(reversed(items[:20])),
+            }
+        )
+    return jsonify({"participants": trends})
 
 
 @app.get("/api/ai-reviews")
@@ -349,7 +425,7 @@ def get_ai_period_review():
         return jsonify({"error": "复盘周期参数无效。"}), 400
     with closing(get_conn()) as conn:
         row = conn.execute(
-            "SELECT * FROM ai_period_reviews WHERE period_type = ? AND period_key = ?",
+            "SELECT * FROM period_reviews WHERE period_type = ? AND period_key = ?",
             (period_type, period_key),
         ).fetchone()
     return jsonify(serialize_ai_period_review(row) if row else {})
@@ -394,14 +470,15 @@ def generate_ai_period_review():
 def list_entries():
     month = clean_text(request.args.get("month"))[:7]
     q = clean_text(request.args.get("q"))[:200]
-    person = clean_text(request.args.get("person"))
+    selected_participant_id = clean_text(request.args.get("participant_id"))
+    selected_name = participant_name(selected_participant_id)
     follow_up = clean_text(request.args.get("follow_up") or request.args.get("category"))
     with closing(get_conn()) as conn:
         records = list_records(
             conn,
             "daily",
             period_prefix=month,
-            author=person if person in PEOPLE else "",
+            author=selected_name,
             query=q,
         )
     entries = [daily_record_to_api(record) for record in records]
@@ -410,47 +487,51 @@ def list_entries():
     return jsonify(entries)
 
 
-@app.get("/api/entries/<entry_date>/<person>")
-def get_entry(entry_date: str, person: str):
-    if person not in PEOPLE:
-        return jsonify({"error": "invalid person"}), 400
+@app.get("/api/entries/<entry_date>/<participant_key>")
+def get_entry(entry_date: str, participant_key: str):
+    participant = participant_ref(participant_key)
+    if participant is None:
+        return jsonify({"error": "人物标识无效。"}), 400
     with closing(get_conn()) as conn:
-        record = get_record(conn, "daily", entry_date, person)
-    return jsonify(daily_record_to_api(record) if record else empty_entry(entry_date, person))
+        record = get_record(conn, "daily", entry_date, participant["name"])
+    return jsonify(
+        daily_record_to_api(record) if record else empty_entry(entry_date, participant["id"])
+    )
 
 
 @app.post("/api/entries")
 def save_entry():
     data = request.get_json(silent=True) or {}
     entry_date = clean_text(data.get("entry_date"))
-    person = clean_text(data.get("person"))
+    participant = participant_ref(data.get("participant_id"))
 
     try:
         datetime.strptime(entry_date, "%Y-%m-%d")
     except ValueError:
         return jsonify({"error": "entry_date must be YYYY-MM-DD"}), 400
-    if person not in PEOPLE:
-        return jsonify({"error": "person must be me or partner"}), 400
+    if participant is None:
+        return jsonify({"error": "participant_id 必须是 xiaoli 或 xiaoyuan。"}), 400
     content = normalize_daily_content(data)
     with closing(get_conn()) as conn:
         record = upsert_record(
             conn,
             record_type="daily",
             period_key=entry_date,
-            author=person,
+            author=participant["name"],
             data=content,
-            metadata={"source": "web", "format": "universal"},
+            metadata={"source": "web", "format": "universal", "participant": participant},
         )
         conn.commit()
     return jsonify(daily_record_to_api(record)), 200
 
 
-@app.delete("/api/entries/<entry_date>/<person>")
-def delete_entry(entry_date: str, person: str):
-    if person not in PEOPLE:
-        return jsonify({"error": "invalid person"}), 400
+@app.delete("/api/entries/<entry_date>/<participant_key>")
+def delete_entry(entry_date: str, participant_key: str):
+    participant = participant_ref(participant_key)
+    if participant is None:
+        return jsonify({"error": "人物标识无效。"}), 400
     with closing(get_conn()) as conn:
-        deleted = soft_delete_record(conn, "daily", entry_date, person)
+        deleted = soft_delete_record(conn, "daily", entry_date, participant["name"])
         conn.commit()
     return jsonify({"ok": True, "deleted": deleted})
 
@@ -487,7 +568,7 @@ def save_week():
             conn,
             record_type="weekly",
             period_key=f"{month_key}-W{week_no}",
-            author="joint",
+            author=JOINT_NAME,
             data=content,
             metadata={"source": "web", "format": "universal"},
         )
@@ -499,7 +580,7 @@ def save_week():
 def get_monthly_summary():
     month = clean_text(request.args.get("month"))
     with closing(get_conn()) as conn:
-        record = get_record(conn, "monthly", month, "joint")
+        record = get_record(conn, "monthly", month, JOINT_NAME)
     return jsonify(monthly_record_to_api(record) if record else empty_monthly_record(month))
 
 
@@ -517,7 +598,7 @@ def save_monthly_summary():
             conn,
             record_type="monthly",
             period_key=month_key,
-            author="joint",
+            author=JOINT_NAME,
             data=content,
             metadata={"source": "web", "format": "universal"},
         )
@@ -556,9 +637,9 @@ def add_action_item():
     title = clean_text(data.get("title"))[:300]
     if not title:
         return jsonify({"error": "请写下一个具体行动目标。"}), 400
-    owner = clean_text(data.get("owner")) or "both"
+    owner = clean_text(data.get("owner")) or JOINT_NAME
     kind = clean_text(data.get("kind")) or "goal"
-    if owner not in {"me", "partner", "both"}:
+    if owner not in OWNER_NAMES:
         return jsonify({"error": "行动负责人无效。"}), 400
     if kind not in {"boundary", "practice", "goal"}:
         return jsonify({"error": "行动类型无效。"}), 400
@@ -633,7 +714,7 @@ def export_csv():
         writer.writerow(
             [
                 entry["entry_date"],
-                "我" if entry["person"] == "me" else "他",
+                entry["participant"]["name"],
                 entry["appreciation"],
                 entry["event"],
                 entry["feeling"],
@@ -673,16 +754,17 @@ def backup_json():
         schemas = [dict(row) for row in conn.execute("SELECT * FROM record_schemas ORDER BY record_type, version")]
         analyses = [
             serialize_analysis_record(row)
-            for row in conn.execute("SELECT * FROM analysis_records ORDER BY created_at")
+            for row in conn.execute("SELECT * FROM scene_analyses ORDER BY created_at")
         ]
-        ai_reviews = [
+        period_reviews = [
             serialize_ai_period_review(row)
-            for row in conn.execute("SELECT * FROM ai_period_reviews ORDER BY period_type, period_key")
+            for row in conn.execute("SELECT * FROM period_reviews ORDER BY period_type, period_key")
         ]
     payload = {
-        "version": 3,
+        "version": 4,
         "app_version": APP_VERSION,
         "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "participants": [dict(item) for item in PARTICIPANTS],
         "daily_entries": entries,
         "weekly_summaries": weeks,
         "monthly_summaries": months,
@@ -690,8 +772,8 @@ def backup_json():
         "record_revisions": revisions,
         "record_schemas": schemas,
         "action_items": actions,
-        "analysis_records": analyses,
-        "ai_period_reviews": ai_reviews,
+        "scene_analyses": analyses,
+        "period_reviews": period_reviews,
     }
     return Response(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -722,19 +804,18 @@ def health():
             "ai_configured": model_catalog["configured"],
             "features": {
                 "gallup_chat": True,
-                "ai_period_reviews": True,
+                "period_reviews": True,
                 "model_selector": True,
                 "flexible_records": True,
                 "dynamic_actions": True,
+                "participant_arrays": True,
             },
         }
     )
 
 
-AI_REVIEW_STRING_FIELDS = (
+PERIOD_INTERACTION_STRING_FIELDS = (
     "summary",
-    "feedback_me",
-    "feedback_partner",
     "what_improved",
     "risk_pattern",
     "adjustment_goal",
@@ -768,8 +849,8 @@ def build_period_source(period_type: str, period_key: str) -> dict[str, Any]:
         if period_type == "daily":
             entries = [
                 record
-                for person in ("me", "partner")
-                if (record := get_record(conn, "daily", period_key, person))
+                for profile in PARTICIPANTS
+                if (record := get_record(conn, "daily", period_key, profile["name"]))
             ]
             source["daily_entries"] = [
                 entry_for_ai_review(daily_record_to_api(record)) for record in entries
@@ -793,7 +874,7 @@ def build_period_source(period_type: str, period_key: str) -> dict[str, Any]:
                 start_date = date(year, month, days_in_month)
                 end_date = start_date
                 entries = []
-            summary = get_record(conn, "weekly", period_key, "joint")
+            summary = get_record(conn, "weekly", period_key, JOINT_NAME)
             source.update(
                 {
                     "date_range": [start_date.isoformat(), end_date.isoformat()],
@@ -806,12 +887,10 @@ def build_period_source(period_type: str, period_key: str) -> dict[str, Any]:
         else:
             entries = list_records(conn, "daily", period_prefix=period_key)
             weeks = list_records(conn, "weekly", period_prefix=f"{period_key}-W")
-            month = get_record(conn, "monthly", period_key, "joint")
+            month = get_record(conn, "monthly", period_key, JOINT_NAME)
             analyses = conn.execute(
                 """
-                SELECT created_at, occurred_at, scene_type, question_summary,
-                       behavior_score, progress_assessment, next_action
-                FROM analysis_records
+                SELECT * FROM scene_analyses
                 WHERE occurred_at LIKE ? OR (occurred_at = '' AND created_at LIKE ?)
                 ORDER BY created_at DESC
                 LIMIT 30
@@ -827,7 +906,10 @@ def build_period_source(period_type: str, period_key: str) -> dict[str, Any]:
                         compact_mapping(record["data"], 700) for record in reversed(weeks)
                     ],
                     "monthly_summary": compact_mapping(month["data"], 1200) if month else None,
-                    "completed_scene_analyses": [compact_row(row, 700) for row in analyses],
+                    "completed_scene_analyses": [
+                        compact_analysis_for_context(serialize_analysis_record(row))
+                        for row in analyses
+                    ],
                 }
             )
 
@@ -840,7 +922,7 @@ def build_period_source(period_type: str, period_key: str) -> dict[str, Any]:
 def entry_for_ai_review(entry: dict[str, Any]) -> dict[str, Any]:
     fields = (
         "entry_date",
-        "person",
+        "participant",
         "appreciation",
         "event",
         "feeling",
@@ -851,7 +933,7 @@ def entry_for_ai_review(entry: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         field: clean_text(entry.get(field))[:500]
-        if field not in {"entry_date", "person", "follow_up"}
+        if field not in {"entry_date", "participant", "follow_up"}
         else entry.get(field, "")
         for field in fields
     }
@@ -874,6 +956,74 @@ def compact_mapping(value: dict[str, Any], max_length: int) -> dict[str, Any]:
     }
 
 
+def compact_analysis_for_context(analysis: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "created_at": analysis.get("created_at", ""),
+        "occurred_at": analysis.get("occurred_at", ""),
+        "scene_type": analysis.get("scene_type", "其他"),
+        "question_summary": clean_text(analysis.get("question_summary"))[:500],
+        "keywords": analysis.get("keywords", [])[:8],
+        "participants": [
+            {
+                "participant": item.get("participant", {}),
+                "inner_expectation": clean_text(item.get("inner_expectation"))[:500],
+                "talent_state": clean_text(item.get("talent_state"))[:500],
+                "behavior": {
+                    "score": item.get("behavior", {}).get("score"),
+                    "feedback": clean_text(item.get("behavior", {}).get("feedback"))[:500],
+                },
+            }
+            for item in analysis.get("participants", [])
+        ],
+        "interaction": {
+            key: clean_text(analysis.get("interaction", {}).get(key))[:500]
+            for key in ("progress_assessment", "next_action", "communication_guidance")
+        },
+    }
+
+
+def find_participant_payload(
+    items: list[Any],
+    target_participant_id: str,
+) -> dict[str, Any]:
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        raw_ref = item.get("participant") if isinstance(item.get("participant"), dict) else {}
+        candidate = (
+            clean_text(raw_ref.get("id"))
+            or participant_id(clean_text(raw_ref.get("name")))
+            or clean_text(item.get("participant_id"))
+            or participant_id(clean_text(item.get("participant_name")))
+        )
+        if candidate == target_participant_id:
+            return item
+    return {}
+
+
+def normalize_score(value: Any) -> int | None:
+    try:
+        score = int(value) if value is not None else None
+    except (TypeError, ValueError):
+        score = None
+    return score if score is not None and 1 <= score <= 10 else None
+
+
+def json_load(value: Any, default: Any) -> Any:
+    try:
+        return json.loads(value or "")
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
+def analysis_participant(
+    analysis: dict[str, Any],
+    target_participant_id: str,
+) -> dict[str, Any] | None:
+    item = find_participant_payload(analysis.get("participants", []), target_participant_id)
+    return item or None
+
+
 def review_source_text(source: dict[str, Any]) -> str:
     meaningful_keys = {
         "appreciation",
@@ -883,8 +1033,8 @@ def review_source_text(source: dict[str, Any]) -> str:
         "follow_up",
         "highlights",
         "recurring_pattern",
-        "my_learning",
-        "partner_signal",
+        "observed_adjustment",
+        "participant_signals",
         "overall_change",
         "what_helped",
         "recurring_patterns",
@@ -895,6 +1045,9 @@ def review_source_text(source: dict[str, Any]) -> str:
         "question_summary",
         "progress_assessment",
         "next_action",
+        "feedback",
+        "summary",
+        "adjustment_goal",
     }
     texts: list[str] = []
 
@@ -913,16 +1066,33 @@ def review_source_text(source: dict[str, Any]) -> str:
 
 
 def normalize_ai_period_review(raw: dict[str, Any]) -> dict[str, Any]:
-    review = {field: clean_text(raw.get(field))[:4000] for field in AI_REVIEW_STRING_FIELDS}
-    for field in ("score_me", "score_partner", "relationship_score"):
-        try:
-            score = int(raw.get(field)) if raw.get(field) is not None else None
-        except (TypeError, ValueError):
-            score = None
-        review[field] = score if score is not None and 1 <= score <= 10 else None
-    raw_actions = raw.get("actions") if isinstance(raw.get("actions"), list) else []
-    review["actions"] = [clean_text(item)[:700] for item in raw_actions if clean_text(item)][:3]
-    return review
+    raw_participants = raw.get("participants") if isinstance(raw.get("participants"), list) else []
+    participants: list[dict[str, Any]] = []
+    for profile in PARTICIPANTS:
+        source = find_participant_payload(raw_participants, profile["id"])
+        participants.append(
+            {
+                "participant": dict(profile),
+                "score": normalize_score(source.get("score")),
+                "feedback": clean_text(source.get("feedback"))[:4000],
+            }
+        )
+
+    raw_interaction = raw.get("interaction") if isinstance(raw.get("interaction"), dict) else {}
+    interaction = {
+        field: clean_text(raw_interaction.get(field))[:4000]
+        for field in PERIOD_INTERACTION_STRING_FIELDS
+    }
+    interaction["score"] = normalize_score(raw_interaction.get("score"))
+    raw_actions = (
+        raw_interaction.get("actions")
+        if isinstance(raw_interaction.get("actions"), list)
+        else []
+    )
+    interaction["actions"] = [
+        clean_text(item)[:700] for item in raw_actions if clean_text(item)
+    ][:3]
+    return {"participants": participants, "interaction": interaction}
 
 
 def save_ai_period_review(
@@ -932,64 +1102,37 @@ def save_ai_period_review(
     model_name: str = "",
 ) -> dict[str, Any]:
     now = datetime.now().isoformat(timespec="seconds")
-    values = (
-        period_type,
-        period_key,
-        review["summary"],
-        review["score_me"],
-        review["score_partner"],
-        review["relationship_score"],
-        review["feedback_me"],
-        review["feedback_partner"],
-        review["what_improved"],
-        review["risk_pattern"],
-        review["adjustment_goal"],
-        json.dumps(review["actions"], ensure_ascii=False),
-        review["conversation_example"],
-        review["confidence"],
-        model_name,
-        now,
-        now,
-    )
+    participants_json = json.dumps(review["participants"], ensure_ascii=False)
+    interaction_json = json.dumps(review["interaction"], ensure_ascii=False)
+    values = (period_type, period_key, participants_json, interaction_json, model_name, now, now)
     with closing(get_conn()) as conn:
         conn.execute(
             """
-            INSERT INTO ai_period_reviews (
-                period_type, period_key, summary, score_me, score_partner,
-                relationship_score, feedback_me, feedback_partner, what_improved,
-                risk_pattern, adjustment_goal, actions, conversation_example,
-                confidence, model_name, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO period_reviews (
+                period_type, period_key, participants_json, interaction_json,
+                model_name, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(period_type, period_key) DO UPDATE SET
-                summary = excluded.summary,
-                score_me = excluded.score_me,
-                score_partner = excluded.score_partner,
-                relationship_score = excluded.relationship_score,
-                feedback_me = excluded.feedback_me,
-                feedback_partner = excluded.feedback_partner,
-                what_improved = excluded.what_improved,
-                risk_pattern = excluded.risk_pattern,
-                adjustment_goal = excluded.adjustment_goal,
-                actions = excluded.actions,
-                conversation_example = excluded.conversation_example,
-                confidence = excluded.confidence,
+                participants_json = excluded.participants_json,
+                interaction_json = excluded.interaction_json,
                 model_name = excluded.model_name,
-                revision = ai_period_reviews.revision + 1,
+                revision = period_reviews.revision + 1,
                 updated_at = excluded.updated_at
             """,
             values,
         )
-        if review["adjustment_goal"]:
+        interaction = review["interaction"]
+        if interaction["adjustment_goal"]:
             upsert_ai_goal(
                 conn,
                 period_type,
                 period_key,
-                review["adjustment_goal"],
-                "；".join(review["actions"][:2]),
+                interaction["adjustment_goal"],
+                "；".join(interaction["actions"][:2]),
             )
         conn.commit()
         row = conn.execute(
-            "SELECT * FROM ai_period_reviews WHERE period_type = ? AND period_key = ?",
+            "SELECT * FROM period_reviews WHERE period_type = ? AND period_key = ?",
             (period_type, period_key),
         ).fetchone()
     return serialize_ai_period_review(row)
@@ -997,28 +1140,28 @@ def save_ai_period_review(
 
 def serialize_ai_period_review(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
-    try:
-        item["actions"] = json.loads(item.get("actions") or "[]")
-    except json.JSONDecodeError:
-        item["actions"] = []
+    item["participants"] = json_load(item.pop("participants_json", "[]"), [])
+    item["interaction"] = json_load(item.pop("interaction_json", "{}"), {})
     return item
 
 
-ANALYSIS_STRING_FIELDS = (
+ANALYSIS_CORE_STRING_FIELDS = (
     "occurred_at",
     "scene_type",
-    "roles",
     "observed_facts",
     "question_summary",
-    "inner_expectation_me",
-    "inner_expectation_partner",
-    "talent_state_me",
-    "talent_state_partner",
-    "interaction_loop",
+)
+
+ANALYSIS_PARTICIPANT_STRING_FIELDS = (
+    "role_in_event",
+    "inner_expectation",
+    "talent_state",
+)
+
+ANALYSIS_INTERACTION_STRING_FIELDS = (
+    "loop",
     "communication_guidance",
     "recommended_wording",
-    "behavior_feedback",
-    "score_reason",
     "progress_assessment",
     "next_action",
     "uncertainty",
@@ -1051,7 +1194,10 @@ def normalize_chat_history(raw: Any) -> list[dict[str, str]]:
 
 
 def normalize_analysis_record(raw: dict[str, Any]) -> dict[str, Any]:
-    record = {field: clean_text(raw.get(field))[:3000] for field in ANALYSIS_STRING_FIELDS}
+    record = {
+        field: clean_text(raw.get(field))[:3000]
+        for field in ANALYSIS_CORE_STRING_FIELDS
+    }
     record["scene_type"] = record["scene_type"] or "其他"
 
     raw_keywords = raw.get("keywords")
@@ -1066,14 +1212,43 @@ def normalize_analysis_record(raw: dict[str, Any]) -> dict[str, Any]:
             break
     record["keywords"] = keywords
 
-    try:
-        score = int(raw.get("behavior_score")) if raw.get("behavior_score") is not None else None
-    except (TypeError, ValueError):
-        score = None
-    record["behavior_score"] = score if score is not None and 1 <= score <= 10 else None
+    raw_participants = raw.get("participants") if isinstance(raw.get("participants"), list) else []
+    participants: list[dict[str, Any]] = []
+    for profile in PARTICIPANTS:
+        source = find_participant_payload(raw_participants, profile["id"])
+        raw_behavior = source.get("behavior") if isinstance(source.get("behavior"), dict) else {}
+        raw_dimensions = (
+            raw_behavior.get("dimensions")
+            if isinstance(raw_behavior.get("dimensions"), dict)
+            else {}
+        )
+        dimensions = {
+            clean_text(key)[:40]: clean_text(value)[:800]
+            for key, value in list(raw_dimensions.items())[:8]
+            if clean_text(key)
+        }
+        participants.append(
+            {
+                "participant": dict(profile),
+                **{
+                    field: clean_text(source.get(field))[:3000]
+                    for field in ANALYSIS_PARTICIPANT_STRING_FIELDS
+                },
+                "behavior": {
+                    "feedback": clean_text(raw_behavior.get("feedback"))[:3000],
+                    "score": normalize_score(raw_behavior.get("score")),
+                    "dimensions": dimensions,
+                    "score_reason": clean_text(raw_behavior.get("score_reason"))[:3000],
+                },
+            }
+        )
+    record["participants"] = participants
 
-    dimensions = raw.get("behavior_dimensions")
-    record["behavior_dimensions"] = dimensions if isinstance(dimensions, dict) else {}
+    raw_interaction = raw.get("interaction") if isinstance(raw.get("interaction"), dict) else {}
+    record["interaction"] = {
+        field: clean_text(raw_interaction.get(field))[:3000]
+        for field in ANALYSIS_INTERACTION_STRING_FIELDS
+    }
     return record
 
 
@@ -1084,15 +1259,20 @@ def save_analysis_record(
     model_name: str = "",
 ) -> dict[str, Any]:
     now = datetime.now().isoformat(timespec="seconds")
+    participants_json = json.dumps(record["participants"], ensure_ascii=False)
+    interaction_json = json.dumps(record["interaction"], ensure_ascii=False)
+    searchable_text = json.dumps(record, ensure_ascii=False)
     values = (
         conversation_id,
         turn_id,
-        *(record[field] for field in ANALYSIS_STRING_FIELDS[:6]),
+        record["occurred_at"],
+        record["scene_type"],
+        record["observed_facts"],
+        record["question_summary"],
         json.dumps(record["keywords"], ensure_ascii=False),
-        *(record[field] for field in ANALYSIS_STRING_FIELDS[6:13]),
-        record["behavior_score"],
-        json.dumps(record["behavior_dimensions"], ensure_ascii=False),
-        *(record[field] for field in ANALYSIS_STRING_FIELDS[13:]),
+        participants_json,
+        interaction_json,
+        searchable_text,
         model_name,
         now,
         now,
@@ -1100,61 +1280,44 @@ def save_analysis_record(
     with closing(get_conn()) as conn:
         conn.execute(
             """
-            INSERT INTO analysis_records (
-                conversation_id, turn_id, occurred_at, scene_type, roles,
-                observed_facts, question_summary, inner_expectation_me, keywords,
-                inner_expectation_partner, talent_state_me, talent_state_partner,
-                interaction_loop, communication_guidance, recommended_wording,
-                behavior_feedback, behavior_score, behavior_dimensions, score_reason,
-                progress_assessment, next_action, uncertainty, confidence,
+            INSERT INTO scene_analyses (
+                conversation_id, turn_id, occurred_at, scene_type,
+                observed_facts, question_summary, keywords_json,
+                participants_json, interaction_json, searchable_text,
                 model_name, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(turn_id) DO UPDATE SET
                 occurred_at = excluded.occurred_at,
                 scene_type = excluded.scene_type,
-                roles = excluded.roles,
                 observed_facts = excluded.observed_facts,
                 question_summary = excluded.question_summary,
-                keywords = excluded.keywords,
-                inner_expectation_me = excluded.inner_expectation_me,
-                inner_expectation_partner = excluded.inner_expectation_partner,
-                talent_state_me = excluded.talent_state_me,
-                talent_state_partner = excluded.talent_state_partner,
-                interaction_loop = excluded.interaction_loop,
-                communication_guidance = excluded.communication_guidance,
-                recommended_wording = excluded.recommended_wording,
-                behavior_feedback = excluded.behavior_feedback,
-                behavior_score = excluded.behavior_score,
-                behavior_dimensions = excluded.behavior_dimensions,
-                score_reason = excluded.score_reason,
-                progress_assessment = excluded.progress_assessment,
-                next_action = excluded.next_action,
-                uncertainty = excluded.uncertainty,
-                confidence = excluded.confidence,
+                keywords_json = excluded.keywords_json,
+                participants_json = excluded.participants_json,
+                interaction_json = excluded.interaction_json,
+                searchable_text = excluded.searchable_text,
                 model_name = excluded.model_name,
                 updated_at = excluded.updated_at
             """,
             values,
         )
         conn.commit()
-        row = conn.execute("SELECT * FROM analysis_records WHERE turn_id = ?", (turn_id,)).fetchone()
+        row = conn.execute("SELECT * FROM scene_analyses WHERE turn_id = ?", (turn_id,)).fetchone()
     return serialize_analysis_record(row)
 
 
 def serialize_analysis_record(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
-    for field, default in (("keywords", []), ("behavior_dimensions", {})):
-        try:
-            item[field] = json.loads(item.get(field) or json.dumps(default))
-        except json.JSONDecodeError:
-            item[field] = default
+    item["keywords"] = json_load(item.pop("keywords_json", "[]"), [])
+    item["participants"] = json_load(item.pop("participants_json", "[]"), [])
+    item["interaction"] = json_load(item.pop("interaction_json", "{}"), {})
+    item.pop("searchable_text", None)
     return item
 
 
 def find_similar_analyses(query: str, limit: int = 5) -> list[dict[str, Any]]:
     with closing(get_conn()) as conn:
         rows = conn.execute(
-            "SELECT * FROM analysis_records ORDER BY created_at DESC LIMIT 200"
+            "SELECT * FROM scene_analyses ORDER BY created_at DESC LIMIT 200"
         ).fetchall()
     if not rows:
         return []
@@ -1167,14 +1330,7 @@ def find_similar_analyses(query: str, limit: int = 5) -> list[dict[str, Any]]:
     query_grams = chinese_bigrams(query_text)
     ranked: list[tuple[float, int, sqlite3.Row]] = []
     for recency, row in enumerate(rows):
-        searchable = " ".join(
-            str(row[field] or "")
-            for field in (
-                "scene_type", "question_summary", "keywords", "inner_expectation_me",
-                "inner_expectation_partner", "talent_state_me", "talent_state_partner",
-                "interaction_loop", "communication_guidance", "behavior_feedback",
-            )
-        ).lower()
+        searchable = clean_text(row["searchable_text"]).lower()
         compact = re.sub(r"\s+", "", searchable)
         score = sum(min(len(term), 12) * 2 for term in query_terms if term in searchable)
         if query_text and query_text in compact:
@@ -1189,21 +1345,7 @@ def find_similar_analyses(query: str, limit: int = 5) -> list[dict[str, Any]]:
     if not selected:
         selected = [item[2] for item in ranked[: min(3, limit)]]
 
-    result: list[dict[str, Any]] = []
-    for row in selected:
-        item = serialize_analysis_record(row)
-        result.append(
-            {
-                key: item.get(key)
-                for key in (
-                    "created_at", "scene_type", "question_summary", "keywords",
-                    "inner_expectation_me", "inner_expectation_partner",
-                    "talent_state_me", "talent_state_partner", "behavior_score",
-                    "score_reason", "progress_assessment", "next_action",
-                )
-            }
-        )
-    return result
+    return [compact_analysis_for_context(serialize_analysis_record(row)) for row in selected]
 
 
 def chinese_bigrams(value: str) -> set[str]:
@@ -1231,6 +1373,10 @@ def normalize_daily_content(data: dict[str, Any]) -> dict[str, str]:
 
 def daily_record_to_api(record: dict[str, Any]) -> dict[str, Any]:
     data = record.get("data", {})
+    participant = participant_ref(record.get("author")) or {
+        "id": "",
+        "name": clean_text(record.get("author")),
+    }
     appreciation = clean_text(data.get("appreciation"))
     event = clean_text(data.get("event"))
     response = clean_text(data.get("response"))
@@ -1240,7 +1386,7 @@ def daily_record_to_api(record: dict[str, Any]) -> dict[str, Any]:
         "id": record.get("id"),
         "entry_date": record.get("period_key", ""),
         "month_key": clean_text(record.get("period_key"))[:7],
-        "person": record.get("author", ""),
+        "participant": participant,
         "appreciation": appreciation,
         "event": event,
         "feeling": clean_text(data.get("feeling")),
@@ -1256,11 +1402,12 @@ def daily_record_to_api(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def empty_entry(entry_date: str, person: str) -> dict[str, Any]:
+def empty_entry(entry_date: str, participant_key: str) -> dict[str, Any]:
+    participant = participant_ref(participant_key) or {"id": "", "name": ""}
     return {
         "entry_date": entry_date,
         "month_key": entry_date[:7],
-        "person": person,
+        "participant": participant,
         "appreciation": "",
         "event": "",
         "feeling": "",
@@ -1280,8 +1427,8 @@ def normalize_weekly_content(data: dict[str, Any]) -> dict[str, str]:
     return {
         "highlights": clean_text(data.get("highlights"))[:4000],
         "recurring_pattern": clean_text(data.get("recurring_pattern"))[:4000],
-        "my_learning": clean_text(data.get("my_learning"))[:4000],
-        "partner_signal": clean_text(data.get("partner_signal"))[:4000],
+        "observed_adjustment": clean_text(data.get("observed_adjustment"))[:4000],
+        "participant_signals": clean_text(data.get("participant_signals"))[:4000],
         "next_focus": clean_text(data.get("next_focus"))[:4000],
     }
 
@@ -1297,8 +1444,8 @@ def weekly_record_to_api(record: dict[str, Any]) -> dict[str, Any]:
         "week_no": week_no,
         "highlights": clean_text(data.get("highlights")),
         "recurring_pattern": clean_text(data.get("recurring_pattern")),
-        "my_learning": clean_text(data.get("my_learning")),
-        "partner_signal": clean_text(data.get("partner_signal")),
+        "observed_adjustment": clean_text(data.get("observed_adjustment")),
+        "participant_signals": clean_text(data.get("participant_signals")),
         "next_focus": clean_text(data.get("next_focus")),
         "schema_key": record.get("schema_key"),
         "schema_version": record.get("schema_version"),

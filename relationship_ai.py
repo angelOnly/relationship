@@ -8,6 +8,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from participants import PARTICIPANTS
+
 
 BASE_DIR = Path(__file__).resolve().parent
 SKILL_DIR = BASE_DIR / "skills" / "gallup-relationship-review"
@@ -94,8 +96,9 @@ def analyze_relationship(
     history: list[dict[str, str]],
     memories: list[dict[str, Any]],
     model_name: str | None = None,
+    speaker: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    messages = build_messages(message, history, memories)
+    messages = build_messages(message, history, memories, speaker=speaker)
     first_content = _call_chat_completions(messages, model_name=model_name)
     parsed = _parse_structured_response(first_content)
     if parsed is not None:
@@ -122,6 +125,51 @@ def analyze_relationship(
     return parsed
 
 
+def stream_relationship_analysis(
+    message: str,
+    history: list[dict[str, str]],
+    memories: list[dict[str, Any]],
+    model_name: str | None = None,
+    speaker: dict[str, str] | None = None,
+):
+    """Yield visible reply deltas, then yield the parsed structured result."""
+    messages = build_messages(message, history, memories, speaker=speaker)
+    extractor = JsonStringFieldExtractor("reply")
+    content_parts: list[str] = []
+
+    for chunk in _stream_chat_completion_chunks(messages, model_name=model_name):
+        content_parts.append(chunk)
+        for delta in extractor.feed(chunk):
+            if delta:
+                yield {"type": "delta", "text": delta}
+
+    first_content = "".join(content_parts)
+    parsed = _parse_structured_response(first_content)
+    if parsed is not None:
+        yield {"type": "result", "result": parsed}
+        return
+
+    repair_messages = messages + [
+        {"role": "assistant", "content": first_content[:12000]},
+        {
+            "role": "user",
+            "content": (
+                "把你上一条回答原意不变地转换为 output-contract.md 规定的单个 JSON 对象。"
+                "不要补充新判断，不要使用代码围栏。"
+            ),
+        },
+    ]
+    repaired_content = _call_chat_completions(
+        repair_messages,
+        temperature=0.0,
+        model_name=model_name,
+    )
+    parsed = _parse_structured_response(repaired_content)
+    if parsed is None:
+        raise AIServiceError("模型返回了无法解析的结构化结果，请稍后重试。")
+    yield {"type": "result", "result": parsed}
+
+
 def review_journal_period(
     period_type: str,
     period_label: str,
@@ -132,8 +180,9 @@ def review_journal_period(
     skill_bundle = _load_skill_bundle(JOURNAL_CONTRACT)
     source_json = json.dumps(source, ensure_ascii=False, separators=(",", ":"))
     memory_json = json.dumps(memories, ensure_ascii=False, separators=(",", ":"))
+    participant_json = json.dumps(PARTICIPANTS, ensure_ascii=False, separators=(",", ":"))
     system_prompt = f"""
-你是小狸与小元的关系周期复盘助手。严格执行以下项目技能和日/周/月复盘契约：
+你是小娌与小元的关系周期复盘助手。严格执行以下项目技能和日/周/月复盘契约：
 
 {skill_bundle}
 
@@ -142,6 +191,7 @@ def review_journal_period(
 
 规则：
 - 只根据提供的周期记录评分；缺少某一方记录时，对该方返回 null，不做猜测。
+- 固定人物目录是 {participant_json}；participants 必须按小娌、小元排序并同时返回。
 - 评分评价可观察行为和互动质量，不评价人格、爱意、性能力、生育能力或婚姻价值。
 - 历史材料只是比较背景；本周期出现改善时必须如实承认。
 - 周复盘关注重复模式和承诺兑现；月复盘只给下月一个最高优先级目标。
@@ -180,16 +230,24 @@ def build_messages(
     message: str,
     history: list[dict[str, str]],
     memories: list[dict[str, Any]],
+    speaker: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     skill_bundle = _load_skill_bundle(CHAT_CONTRACT)
     memory_json = json.dumps(memories, ensure_ascii=False, separators=(",", ":"))
+    participant_json = json.dumps(PARTICIPANTS, ensure_ascii=False, separators=(",", ":"))
+    active_speaker = speaker if speaker in PARTICIPANTS else dict(PARTICIPANTS[0])
+    other_participant = next(
+        item for item in PARTICIPANTS if item["id"] != active_speaker["id"]
+    )
     system_prompt = f"""
-你是小狸与小元的盖洛普亲密关系复盘助手。必须执行下面的项目技能，不得用才干为伤害行为免责。
+你是小娌与小元的盖洛普亲密关系复盘助手。必须执行下面的项目技能，不得用才干为伤害行为免责。
 
 {skill_bundle}
 
 额外执行规则：
-- 默认把当前说话者称为“你”，不要擅自断定当前用户一定是小狸或小元；身份影响判断时只追问一次。
+- 固定人物目录是 {participant_json}；结构化记录中只能使用小娌与小元，不使用“我方／对方”或 me／partner。
+- 本次记录者是 {active_speaker["name"]}。用户消息里的“我”默认指 {active_speaker["name"]}，“他／她／对方”默认指 {other_participant["name"]}；结构化结果仍必须写小娌、小元的标准名称。
+- 如果本次文字明确说明实际记录者与选择不一致，以文字中的明确姓名为准，并在不确定会影响判断时只追问一次。
 - 每次只处理一个具体事件。已有信息足够时直接完成分析，不要为了走流程而继续提问。
 - 澄清阶段最多问三个短问题；完成阶段才允许生成 record。
 - 历史记录只用于寻找相似模式和比较进步，不得当成当前事件的既定事实。
@@ -301,26 +359,11 @@ def _call_chat_completions(
     temperature: float = 0.25,
     model_name: str | None = None,
 ) -> str:
-    key, base_url, model, timeout, json_mode = _provider_config(model_name)
-    payload: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": 2600,
-    }
-    if json_mode:
-        payload["response_format"] = {"type": "json_object"}
-
-    request = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "relationship-journal/3.0",
-        },
-        method="POST",
+    request, timeout = _chat_completions_request(
+        messages,
+        temperature=temperature,
+        model_name=model_name,
+        stream=False,
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -347,6 +390,167 @@ def _call_chat_completions(
     if not content:
         raise AIServiceError("模型没有返回可用内容。")
     return content
+
+
+def _stream_chat_completion_chunks(
+    messages: list[dict[str, str]],
+    *,
+    temperature: float = 0.25,
+    model_name: str | None = None,
+):
+    request, timeout = _chat_completions_request(
+        messages,
+        temperature=temperature,
+        model_name=model_name,
+        stream=True,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line or line.startswith(":"):
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data_line = line[5:].strip()
+                if data_line == "[DONE]":
+                    break
+                try:
+                    data = json.loads(data_line)
+                    choice = data["choices"][0]
+                except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+                    raise AIServiceError("模型服务返回了不兼容的流式响应格式。") from exc
+                content = _stream_choice_content(choice)
+                if content:
+                    yield content
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        detail = re.sub(r"sk-[A-Za-z0-9_-]+", "[redacted]", detail)
+        raise AIServiceError(f"模型服务返回 HTTP {exc.code}：{detail or '无详细信息'}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise AIServiceError(f"暂时无法连接模型服务：{exc.reason if hasattr(exc, 'reason') else exc}") from exc
+
+
+def _chat_completions_request(
+    messages: list[dict[str, str]],
+    *,
+    temperature: float,
+    model_name: str | None,
+    stream: bool,
+) -> tuple[urllib.request.Request, float]:
+    key, base_url, model, timeout, json_mode = _provider_config(model_name)
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": 2600,
+    }
+    if stream:
+        payload["stream"] = True
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+
+    return (
+        urllib.request.Request(
+            f"{base_url}/chat/completions",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream" if stream else "application/json",
+                "User-Agent": "relationship-journal/4.0",
+            },
+            method="POST",
+        ),
+        timeout,
+    )
+
+
+def _stream_choice_content(choice: dict[str, Any]) -> str:
+    delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+    content = delta.get("content")
+    if content is None:
+        content = choice.get("text")
+    if content is None:
+        return ""
+    if isinstance(content, list):
+        return "".join(
+            str(item.get("text", "")) if isinstance(item, dict) else str(item)
+            for item in content
+        )
+    return str(content)
+
+
+class JsonStringFieldExtractor:
+    """Incrementally emit decoded text from a JSON string field."""
+
+    def __init__(self, field_name: str):
+        self.field_name = field_name
+        self.buffer = ""
+        self.started = False
+        self.done = False
+        self.escape = False
+        self.unicode_escape: str | None = None
+
+    def feed(self, chunk: str) -> list[str]:
+        if self.done:
+            return []
+        if not self.started:
+            self.buffer += chunk
+            marker = f'"{self.field_name}"'
+            marker_index = self.buffer.find(marker)
+            if marker_index < 0:
+                self.buffer = self.buffer[-len(marker):]
+                return []
+            colon_index = self.buffer.find(":", marker_index + len(marker))
+            if colon_index < 0:
+                self.buffer = self.buffer[marker_index:]
+                return []
+            quote_index = self.buffer.find('"', colon_index + 1)
+            if quote_index < 0:
+                self.buffer = self.buffer[colon_index + 1 :]
+                return []
+            self.started = True
+            chunk = self.buffer[quote_index + 1 :]
+            self.buffer = ""
+
+        output: list[str] = []
+        for char in chunk:
+            if self.unicode_escape is not None:
+                self.unicode_escape += char
+                if len(self.unicode_escape) == 4:
+                    try:
+                        output.append(chr(int(self.unicode_escape, 16)))
+                    except ValueError:
+                        output.append("\\u" + self.unicode_escape)
+                    self.unicode_escape = None
+                continue
+            if self.escape:
+                self.escape = False
+                if char == "u":
+                    self.unicode_escape = ""
+                else:
+                    output.append(
+                        {
+                            '"': '"',
+                            "\\": "\\",
+                            "/": "/",
+                            "b": "\b",
+                            "f": "\f",
+                            "n": "\n",
+                            "r": "\r",
+                            "t": "\t",
+                        }.get(char, char)
+                    )
+                continue
+            if char == "\\":
+                self.escape = True
+                continue
+            if char == '"':
+                self.done = True
+                break
+            output.append(char)
+        return output
 
 
 def _parse_structured_response(content: str) -> dict[str, Any] | None:
@@ -385,23 +589,14 @@ def _parse_journal_review(content: str) -> dict[str, Any] | None:
     parsed = _extract_json_object(content)
     if not isinstance(parsed, dict):
         return None
-    required = {
-        "summary",
-        "score_me",
-        "score_partner",
-        "relationship_score",
-        "feedback_me",
-        "feedback_partner",
-        "what_improved",
-        "risk_pattern",
-        "adjustment_goal",
-        "actions",
-        "conversation_example",
-        "confidence",
-    }
+    required = {"participants", "interaction"}
     if not required.issubset(parsed):
         return None
-    if not str(parsed.get("summary", "")).strip() or not str(parsed.get("adjustment_goal", "")).strip():
+    participants = parsed.get("participants")
+    interaction = parsed.get("interaction")
+    if not isinstance(participants, list) or not isinstance(interaction, dict):
+        return None
+    if not str(interaction.get("summary", "")).strip() or not str(interaction.get("adjustment_goal", "")).strip():
         return None
     return parsed
 
