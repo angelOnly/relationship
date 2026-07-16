@@ -51,11 +51,37 @@ from relationship_ai import (
     review_journal_period,
     stream_relationship_analysis,
 )
+from practice_ai import run_practice_turn
+from practice_engine import (
+    PracticeConflictError,
+    PracticeValidationError,
+    public_practice_state,
+    require_text,
+    validate_advance,
+)
+from practice_store import (
+    STRATEGY_LABELS,
+    add_practice_turn,
+    create_practice_outcome,
+    create_practice_session,
+    delete_practice_session,
+    find_confirmed_successes,
+    get_practice_progress as build_practice_progress,
+    get_practice_session,
+    get_strategy_stats,
+    init_practice_schema,
+    list_practice_sessions,
+    practice_turn_exists,
+    serialize_practice_outcome,
+    serialize_practice_session,
+    serialize_practice_turn,
+    update_practice_session,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 DB_PATH = DATA_DIR / "relationship.db"
-APP_VERSION = os.getenv("APP_VERSION", "4.1.2")
+APP_VERSION = os.getenv("APP_VERSION", "5.0.0")
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
@@ -114,6 +140,7 @@ def init_db() -> None:
             """
         )
         init_flexible_schema(conn)
+        init_practice_schema(conn)
         conn.commit()
 
 
@@ -172,6 +199,9 @@ def get_active_record_schema(record_type: str):
 @app.post("/api/chat")
 def chat_with_coach():
     data = request.get_json(silent=True) or {}
+    mode = clean_text(data.get("mode")) or "review"
+    if mode not in {"qa", "review"}:
+        return jsonify({"error": "问答模式无效。"}), 400
     message = clean_text(data.get("message"))
     if not message:
         return jsonify({"error": "请先写下这次发生了什么。"}), 400
@@ -185,7 +215,7 @@ def chat_with_coach():
     if speaker is None:
         return jsonify({"error": "本次记录者必须是小娌或小元。"}), 400
     history = normalize_chat_history(data.get("history"))
-    memories = find_similar_analyses(message, limit=5)
+    memories = build_coach_memories(message, speaker["id"], limit=5)
 
     try:
         model_name = resolve_model_name(clean_text(data.get("model")) or None)
@@ -195,6 +225,7 @@ def chat_with_coach():
             memories,
             model_name=model_name,
             speaker=speaker,
+            mode=mode,
         )
     except AIModelError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -210,6 +241,7 @@ def chat_with_coach():
             turn_id,
             model_name,
             len(memories),
+            mode,
         )
     )
 
@@ -217,6 +249,9 @@ def chat_with_coach():
 @app.post("/api/chat/stream")
 def stream_chat_with_coach():
     data = request.get_json(silent=True) or {}
+    mode = clean_text(data.get("mode")) or "review"
+    if mode not in {"qa", "review"}:
+        return jsonify({"error": "问答模式无效。"}), 400
     message = clean_text(data.get("message"))
     if not message:
         return jsonify({"error": "请先写下这次发生了什么。"}), 400
@@ -230,7 +265,7 @@ def stream_chat_with_coach():
     if speaker is None:
         return jsonify({"error": "本次记录者必须是小娌或小元。"}), 400
     history = normalize_chat_history(data.get("history"))
-    memories = find_similar_analyses(message, limit=5)
+    memories = build_coach_memories(message, speaker["id"], limit=5)
     try:
         model_name = resolve_model_name(clean_text(data.get("model")) or None)
     except AIModelError as exc:
@@ -248,6 +283,7 @@ def stream_chat_with_coach():
                     "conversation_id": conversation_id,
                     "memory_count": len(memories),
                     "model_name": model_name,
+                    "mode": mode,
                 }
             )
             for event in stream_relationship_analysis(
@@ -256,6 +292,7 @@ def stream_chat_with_coach():
                 memories,
                 model_name=model_name,
                 speaker=speaker,
+                mode=mode,
             ):
                 if event.get("type") == "delta":
                     yield stream_event({"type": "delta", "text": event.get("text", "")})
@@ -265,7 +302,7 @@ def stream_chat_with_coach():
             if not isinstance(result, dict):
                 raise AIServiceError("模型没有返回可用内容。")
 
-            if result.get("status") == "complete":
+            if mode == "review" and result.get("status") == "complete":
                 yield stream_event({"type": "status", "message": "正在写入长期复盘库…"})
             payload = finish_chat_turn(
                 result,
@@ -273,6 +310,7 @@ def stream_chat_with_coach():
                 turn_id,
                 model_name,
                 len(memories),
+                mode,
             )
             yield stream_event({"type": "final", **payload})
         except (AIConfigError, AIServiceError) as exc:
@@ -298,9 +336,10 @@ def finish_chat_turn(
     turn_id: str,
     model_name: str,
     memory_count: int,
+    mode: str = "review",
 ) -> dict[str, Any]:
     saved = None
-    if result.get("status") == "complete" and isinstance(result.get("record"), dict):
+    if mode == "review" and result.get("status") == "complete" and isinstance(result.get("record"), dict):
         record = normalize_analysis_record(result["record"])
         if record["question_summary"]:
             saved = save_analysis_record(
@@ -318,6 +357,9 @@ def finish_chat_turn(
         "record": saved,
         "memory_count": memory_count,
         "model_name": model_name,
+        "mode": mode,
+        "answer": result.get("answer") if mode == "qa" else None,
+        "source_labels": result.get("source_labels", []) if mode == "qa" else [],
     }
 
 
@@ -415,6 +457,432 @@ def get_progress():
             }
         )
     return jsonify({"participants": trends})
+
+
+PRACTICE_SCENE_TYPES = {
+    "仪式感",
+    "危机管理",
+    "情感支持",
+    "共同活动",
+    "家庭责任",
+    "日常交流",
+    "未来规划",
+    "边界修复",
+    "其他",
+}
+PRACTICE_GOALS = {"理解", "修复", "协商", "设边界", "改变具体行为"}
+
+
+@app.post("/api/practice-sessions")
+def start_practice_session():
+    data = request.get_json(silent=True) or {}
+    speaker = participant_ref(clean_text(data.get("speaker_id")) or "xiaoli")
+    if speaker is None:
+        return jsonify({"error": "练习者必须是小娌或小元。"}), 400
+    ai_role = next(item for item in PARTICIPANTS if item["id"] != speaker["id"])
+    scene_type = clean_text(data.get("scene_type")) or "其他"
+    if scene_type not in PRACTICE_SCENE_TYPES:
+        scene_type = "其他"
+    topic_summary = clean_text(data.get("topic_summary"))[:500]
+    goal = clean_text(data.get("goal"))
+    if goal and goal not in PRACTICE_GOALS:
+        return jsonify({"error": "请选择一个明确的练习目标。"}), 400
+    source_id = data.get("source_scene_analysis_id")
+    try:
+        source_id = int(source_id) if source_id not in {None, ""} else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "来源复盘编号无效。"}), 400
+    try:
+        model_name = resolve_model_name(clean_text(data.get("model")) or None)
+    except AIModelError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except AIConfigError as exc:
+        return jsonify({"error": str(exc)}), 503
+
+    with closing(get_conn()) as conn:
+        if source_id is not None:
+            source_row = conn.execute("SELECT * FROM scene_analyses WHERE id = ?", (source_id,)).fetchone()
+            if source_row is None:
+                return jsonify({"error": "来源复盘不存在。"}), 404
+            source = serialize_analysis_record(source_row)
+            topic_summary = topic_summary or source["question_summary"]
+            if scene_type == "其他" and source["scene_type"] in PRACTICE_SCENE_TYPES:
+                scene_type = source["scene_type"]
+        session = create_practice_session(
+            conn,
+            {
+                "speaker_id": speaker["id"],
+                "ai_role_id": ai_role["id"],
+                "scene_type": scene_type,
+                "topic_summary": topic_summary,
+                "goal": goal,
+                "source_scene_analysis_id": source_id,
+                "model_name": model_name,
+            },
+        )
+        conn.commit()
+    return jsonify(public_practice_state(session)), 201
+
+
+@app.get("/api/practice-sessions")
+def get_practice_sessions():
+    speaker_id_value = clean_text(request.args.get("speaker_id"))
+    if speaker_id_value and speaker_id_value not in PARTICIPANT_IDS:
+        return jsonify({"error": "练习者参数无效。"}), 400
+    status = clean_text(request.args.get("status"))
+    if status and status not in {"active", "paused", "completed", "abandoned", "safety_stop"}:
+        return jsonify({"error": "练习状态参数无效。"}), 400
+    try:
+        limit = max(1, min(int(request.args.get("limit", 30)), 100))
+    except ValueError:
+        limit = 30
+    with closing(get_conn()) as conn:
+        sessions = list_practice_sessions(
+            conn,
+            speaker_id=speaker_id_value,
+            status=status,
+            limit=limit,
+        )
+    return jsonify([public_practice_state(item) for item in sessions])
+
+
+@app.get("/api/practice-sessions/<int:session_id>")
+def get_one_practice_session(session_id: int):
+    with closing(get_conn()) as conn:
+        session = get_practice_session(conn, session_id, include_turns=True)
+    if session is None:
+        return jsonify({"error": "练习不存在。"}), 404
+    return jsonify(public_practice_state(session))
+
+
+@app.post("/api/practice-sessions/<int:session_id>/advance/stream")
+def advance_practice_session_stream(session_id: int):
+    data = request.get_json(silent=True) or {}
+    expected_stage = clean_text(data.get("expected_stage"))
+    action = clean_text(data.get("action"))
+    turn_id = normalize_identifier(data.get("turn_id"))
+    if not turn_id:
+        return jsonify({"error": "练习 turn_id 无效。"}), 400
+
+    with closing(get_conn()) as conn:
+        session = get_practice_session(conn, session_id, include_turns=True)
+        if session is None:
+            return jsonify({"error": "练习不存在。"}), 404
+        if practice_turn_exists(conn, session_id, turn_id):
+            payload = public_practice_state(session)
+            return Response(
+                stream_event({"type": "final", "session": payload, "idempotent": True}),
+                mimetype="application/x-ndjson; charset=utf-8",
+            )
+        try:
+            validate_advance(session, expected_stage, action)
+        except PracticeConflictError as exc:
+            return jsonify({"error": str(exc), "session": public_practice_state(session)}), 409
+        except PracticeValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @stream_with_context
+    def generate_practice():
+        try:
+            yield stream_event({"type": "meta", "session_id": session_id, "stage": expected_stage})
+            yield stream_event({"type": "status", "message": "正在处理当前步骤……"})
+            payload = _advance_practice_session(session_id, turn_id, action, data)
+            yield stream_event({"type": "final", **payload})
+        except (PracticeValidationError, PracticeConflictError, AIConfigError, AIServiceError) as exc:
+            yield stream_event({"type": "error", "error": str(exc)})
+
+    return Response(
+        generate_practice(),
+        mimetype="application/x-ndjson; charset=utf-8",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
+
+
+def _advance_practice_session(
+    session_id: int,
+    turn_id: str,
+    action: str,
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    content = clean_text(data.get("content"))[:5000]
+    correction = clean_text(data.get("correction"))[:2000]
+    with closing(get_conn()) as conn:
+        session = get_practice_session(conn, session_id, include_turns=True)
+        if session is None:
+            raise PracticeValidationError("练习不存在。")
+        if practice_turn_exists(conn, session_id, turn_id):
+            return {"session": public_practice_state(session), "idempotent": True}
+        validate_advance(session, clean_text(data.get("expected_stage")), action)
+
+        if action == "confirm_setup":
+            topic = clean_text(data.get("topic_summary"))[:500] or session.get("topic_summary", "")
+            goal = clean_text(data.get("goal")) or session.get("goal", "")
+            scene_type = clean_text(data.get("scene_type")) or session.get("scene_type", "其他")
+            if scene_type not in PRACTICE_SCENE_TYPES:
+                scene_type = "其他"
+            require_text(topic, "这次要练习的一件小事", 500)
+            if goal not in PRACTICE_GOALS:
+                raise PracticeValidationError("请选择理解、修复、协商、设边界或改变具体行为。")
+            add_practice_turn(
+                conn, session_id, turn_id, session["current_round"], "setup", "user",
+                f"练习目标：{goal}；具体小事：{topic}", {"action": action},
+            )
+            session = update_practice_session(
+                conn,
+                session_id,
+                topic_summary=topic,
+                goal=goal,
+                scene_type=scene_type,
+                stage="narrowing_topic",
+            )
+            conn.commit()
+            return {"session": public_practice_state(session), "reply": "设置已确认。先把这件事写成摄像头能拍到的一小段事实。"}
+
+        if action == "practice_again":
+            add_practice_turn(
+                conn, session_id, turn_id, session["current_round"], session["stage"], "system",
+                "开始新一轮表达练习", {"action": action},
+            )
+            session = update_practice_session(
+                conn,
+                session_id,
+                stage="expression_draft",
+                status="active",
+                current_round=int(session["current_round"]) + 1,
+                final_expression="",
+                final_paraphrase="",
+                final_response="",
+                skill_results={},
+                strategy_tags=[],
+                completed_at=None,
+            )
+            conn.commit()
+            return {"session": public_practice_state(session), "reply": "开始新一轮。这次仍只练一段事实＋感受＋需要＋具体请求。"}
+
+        if action == "complete_practice":
+            now = datetime.now().isoformat(timespec="seconds")
+            add_practice_turn(
+                conn, session_id, turn_id, session["current_round"], "debrief", "system",
+                "练习完成", {"action": action},
+            )
+            session = update_practice_session(
+                conn, session_id, stage="completed", status="completed", completed_at=now
+            )
+            conn.commit()
+            return {"session": public_practice_state(session), "reply": "本次练习已保存。现实中是否有效，需要你使用后亲自记录。"}
+
+        if action == "pause":
+            add_practice_turn(
+                conn, session_id, turn_id, session["current_round"], session["stage"], "system",
+                "练习已暂停", {"action": action},
+            )
+            session = update_practice_session(conn, session_id, status="paused")
+            conn.commit()
+            return {"session": public_practice_state(session), "reply": "练习已暂停，内容已经保存。"}
+
+        if action == "abandon":
+            add_practice_turn(
+                conn, session_id, turn_id, session["current_round"], session["stage"], "system",
+                "练习已放弃", {"action": action},
+            )
+            session = update_practice_session(conn, session_id, status="abandoned")
+            conn.commit()
+            return {"session": public_practice_state(session), "reply": "练习已结束并保留在历史中。"}
+
+        if action in {"submit_topic", "submit_expression", "use_suggestion"}:
+            content = require_text(content, "本步骤内容")
+        if action in {"confirm_partial", "confirm_inaccurate"}:
+            correction = require_text(correction or content, "需要修正的一句话", 2000)
+
+        successes = find_confirmed_successes(
+            conn,
+            " ".join([session.get("scene_type", ""), session.get("topic_summary", ""), content]),
+            speaker_id=session["speaker_id"],
+            limit=3,
+        )
+        result = run_practice_turn(
+            session,
+            action,
+            content,
+            correction=correction,
+            confirmed_successes=successes,
+            model_name=session.get("model_name") or None,
+        )
+
+        user_content = correction or content or action
+        add_practice_turn(
+            conn,
+            session_id,
+            turn_id,
+            session["current_round"],
+            session["stage"],
+            "user",
+            user_content,
+            {"action": action},
+        )
+        actor = "ai_partner" if action == "confirm_accurate" else "ai_coach"
+        add_practice_turn(
+            conn,
+            session_id,
+            f"{turn_id}-ai",
+            session["current_round"],
+            session["stage"],
+            actor,
+            result.get("reply", ""),
+            result,
+        )
+
+        if result.get("status") == "safety_stop":
+            session = update_practice_session(conn, session_id, status="safety_stop")
+        elif action == "submit_topic":
+            feedback = result.get("attempt_feedback", {})
+            session = update_practice_session(
+                conn,
+                session_id,
+                topic_summary=content if feedback.get("result") == "pass" else session["topic_summary"],
+                stage="expression_draft" if feedback.get("result") == "pass" else "narrowing_topic",
+            )
+        elif action in {"submit_expression", "use_suggestion"}:
+            feedback = result.get("attempt_feedback", {})
+            passed = feedback.get("result") == "pass"
+            roleplay = result.get("roleplay") if isinstance(result.get("roleplay"), dict) else {}
+            session = update_practice_session(
+                conn,
+                session_id,
+                stage="paraphrase_confirmation" if passed else "expression_draft",
+                final_expression=content if passed else session["final_expression"],
+                final_paraphrase=clean_text(roleplay.get("paraphrase")) if passed else session["final_paraphrase"],
+                strategy_tags=result.get("strategy_tags", []) if passed else session["strategy_tags"],
+            )
+        elif action in {"confirm_partial", "confirm_inaccurate"}:
+            roleplay = result.get("roleplay", {})
+            session = update_practice_session(
+                conn,
+                session_id,
+                stage="paraphrase_confirmation",
+                final_paraphrase=clean_text(roleplay.get("paraphrase")),
+            )
+        elif action == "confirm_accurate":
+            roleplay = result.get("roleplay", {})
+            session = update_practice_session(
+                conn,
+                session_id,
+                stage="partner_response",
+                final_response=clean_text(roleplay.get("full_response")) or result.get("reply", ""),
+            )
+        elif action == "continue_to_debrief":
+            summary = result.get("final_summary", {})
+            session = update_practice_session(
+                conn,
+                session_id,
+                stage="debrief",
+                final_expression=clean_text(summary.get("final_expression")) or session["final_expression"],
+                final_paraphrase=clean_text(summary.get("final_paraphrase")) or session["final_paraphrase"],
+                final_response=clean_text(summary.get("final_response")) or session["final_response"],
+                skill_results=summary.get("skill_results", {}),
+                strategy_tags=summary.get("strategy_tags", []) or session["strategy_tags"],
+            )
+        conn.commit()
+        session = get_practice_session(conn, session_id, include_turns=True)
+        return {
+            "session": public_practice_state(session),
+            "reply": result.get("reply", ""),
+            "result": result,
+            "idempotent": False,
+        }
+
+
+@app.post("/api/practice-sessions/<int:session_id>/pause")
+def pause_practice_session(session_id: int):
+    with closing(get_conn()) as conn:
+        session = get_practice_session(conn, session_id, include_turns=True)
+        if session is None:
+            return jsonify({"error": "练习不存在。"}), 404
+        if session["status"] not in {"active"}:
+            return jsonify({"error": "当前练习不能暂停。"}), 409
+        session = update_practice_session(conn, session_id, status="paused")
+        conn.commit()
+    return jsonify(public_practice_state(session))
+
+
+@app.post("/api/practice-sessions/<int:session_id>/resume")
+def resume_practice_session(session_id: int):
+    with closing(get_conn()) as conn:
+        session = get_practice_session(conn, session_id, include_turns=True)
+        if session is None:
+            return jsonify({"error": "练习不存在。"}), 404
+        if session["status"] != "paused":
+            return jsonify({"error": "这次练习没有处于暂停状态。"}), 409
+        session = update_practice_session(conn, session_id, status="active")
+        conn.commit()
+    return jsonify(public_practice_state(session))
+
+
+@app.delete("/api/practice-sessions/<int:session_id>")
+def remove_practice_session(session_id: int):
+    with closing(get_conn()) as conn:
+        deleted = delete_practice_session(conn, session_id)
+        conn.commit()
+    if not deleted:
+        return jsonify({"error": "练习不存在。"}), 404
+    return jsonify({"ok": True})
+
+
+@app.post("/api/practice-sessions/<int:session_id>/outcomes")
+def add_practice_outcome_endpoint(session_id: int):
+    data = request.get_json(silent=True) or {}
+    result = clean_text(data.get("result"))
+    if result not in {"helpful", "neutral", "worse"}:
+        return jsonify({"error": "请选择有帮助、一般或变糟。"}), 400
+    used_at = clean_text(data.get("used_at")) or date.today().isoformat()
+    try:
+        date.fromisoformat(used_at)
+    except ValueError:
+        return jsonify({"error": "现实使用日期无效。"}), 400
+    scene_analysis_id = data.get("scene_analysis_id")
+    try:
+        scene_analysis_id = int(scene_analysis_id) if scene_analysis_id not in {None, ""} else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "关联复盘编号无效。"}), 400
+    with closing(get_conn()) as conn:
+        session = get_practice_session(conn, session_id, include_turns=False)
+        if session is None:
+            return jsonify({"error": "练习不存在。"}), 404
+        if not session.get("final_expression"):
+            return jsonify({"error": "这次练习还没有形成可在现实中使用的表达。"}), 409
+        if scene_analysis_id is not None and conn.execute(
+            "SELECT 1 FROM scene_analyses WHERE id = ?", (scene_analysis_id,)
+        ).fetchone() is None:
+            return jsonify({"error": "关联复盘不存在。"}), 404
+        outcome = create_practice_outcome(
+            conn,
+            session_id,
+            {
+                "scene_analysis_id": scene_analysis_id,
+                "used_at": used_at,
+                "partner_reaction": clean_text(data.get("partner_reaction"))[:2000],
+                "result": result,
+                "agreement_reached": bool(data.get("agreement_reached")),
+                "pause_returned": bool(data.get("pause_returned")),
+                "note": clean_text(data.get("note"))[:2000],
+            },
+        )
+        conn.commit()
+    return jsonify(outcome), 201
+
+
+@app.get("/api/practice-progress")
+def get_practice_progress_endpoint():
+    with closing(get_conn()) as conn:
+        result = build_practice_progress(conn)
+    return jsonify(result)
+
+
+@app.get("/api/practice-strategy-stats")
+def get_practice_strategy_stats_endpoint():
+    with closing(get_conn()) as conn:
+        stats = get_strategy_stats(conn)
+    return jsonify({"strategies": stats, "labels": STRATEGY_LABELS})
 
 
 @app.get("/api/ai-reviews")
@@ -852,6 +1320,18 @@ def backup_json():
             serialize_ai_period_review(row)
             for row in conn.execute("SELECT * FROM period_reviews ORDER BY period_type, period_key")
         ]
+        practice_sessions = [
+            serialize_practice_session(row, conn=conn, include_turns=False)
+            for row in conn.execute("SELECT * FROM practice_sessions ORDER BY created_at")
+        ]
+        practice_turns = [
+            serialize_practice_turn(row)
+            for row in conn.execute("SELECT * FROM practice_turns ORDER BY session_id, sequence_no")
+        ]
+        practice_outcomes = [
+            serialize_practice_outcome(row)
+            for row in conn.execute("SELECT * FROM practice_outcomes ORDER BY created_at")
+        ]
     payload = {
         "version": 5,
         "app_version": APP_VERSION,
@@ -866,6 +1346,9 @@ def backup_json():
         "action_items": actions,
         "scene_analyses": analyses,
         "period_reviews": period_reviews,
+        "practice_sessions": practice_sessions,
+        "practice_turns": practice_turns,
+        "practice_outcomes": practice_outcomes,
     }
     return Response(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -902,6 +1385,11 @@ def health():
                 "dynamic_actions": True,
                 "participant_arrays": True,
                 "calendar_journal": True,
+                "coach_modes": ["qa", "review", "practice"],
+                "practice_persistence": True,
+                "practice_step_cards": True,
+                "real_world_outcomes": True,
+                "separate_practice_trends": True,
             },
         }
     )
@@ -1068,6 +1556,8 @@ def compact_mapping(value: dict[str, Any], max_length: int) -> dict[str, Any]:
 
 def compact_analysis_for_context(analysis: dict[str, Any]) -> dict[str, Any]:
     return {
+        "source_type": "real_review",
+        "reference_id": f"scene_analysis:{analysis.get('id', '')}",
         "created_at": analysis.get("created_at", ""),
         "occurred_at": analysis.get("occurred_at", ""),
         "scene_type": analysis.get("scene_type", "其他"),
@@ -1446,16 +1936,32 @@ def find_similar_analyses(query: str, limit: int = 5) -> list[dict[str, Any]]:
         if query_text and query_text in compact:
             score += 100
         record_grams = chinese_bigrams(compact)
+        overlap_ratio = 0.0
         if query_grams and record_grams:
             overlap = len(query_grams & record_grams)
-            score += 30 * (2 * overlap / (len(query_grams) + len(record_grams)))
-        ranked.append((score, -recency, row))
+            overlap_ratio = overlap / max(1, len(query_grams))
+            score += 30 * overlap_ratio
+        # 不再用最近但无关的记录兜底；短查询也至少需要一个明确词或足够的双字重合。
+        if score >= 8 and (query_terms or overlap_ratio >= 0.16):
+            ranked.append((score, -recency, row))
     ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    selected = [item[2] for item in ranked if item[0] > 0][:limit]
-    if not selected:
-        selected = [item[2] for item in ranked[: min(3, limit)]]
+    selected = [item[2] for item in ranked][:limit]
 
     return [compact_analysis_for_context(serialize_analysis_record(row)) for row in selected]
+
+
+def build_coach_memories(query: str, speaker_id: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Prioritize user-confirmed real-world successes, then relevant real reviews."""
+    with closing(get_conn()) as conn:
+        successes = find_confirmed_successes(
+            conn,
+            query,
+            speaker_id=speaker_id,
+            limit=min(3, limit),
+        )
+    remaining = max(0, limit - len(successes))
+    reviews = find_similar_analyses(query, limit=remaining) if remaining else []
+    return [*successes, *reviews]
 
 
 def chinese_bigrams(value: str) -> set[str]:

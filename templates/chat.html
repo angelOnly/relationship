@@ -1,108 +1,188 @@
 {% extends "base.html" %}
-{% block title %}盖洛普对话 · 关系复盘{% endblock %}
+{% block title %}关系教练 · 问答、复盘与练习{% endblock %}
 {% block content %}
 <section class="hero chat-hero">
   <div>
-    <span class="eyebrow">少量提问 · 自动分析 · 长期复盘</span>
-    <h1>先看见彼此在保护什么</h1>
-    <p>说一件刚发生的具体事情。助手会根据小娌与小元的才干画像，只追问必要信息，再回答内在期待、才干状态、正确沟通方式和本次行为反馈。</p>
+    <span class="eyebrow">问答 · 真实复盘 · 单人练习</span>
+    <h1>先看见彼此，再练一句能被听见的话</h1>
+    <p>你可以直接问关系问题、复盘一件真实发生的小事，或让 AI 扮演另一方，完成“表达＋复述确认＋回应”的单人练习。</p>
   </div>
   <aside class="principle-card chat-principle">
-    <strong>记忆原则</strong>
-    <p>澄清对话不会写入长期数据库；只有分析完成后，才保存一条精炼案例。原始聊天仅保留在当前浏览器会话中。</p>
+    <strong>数据边界</strong>
+    <p>问答不评分、不入真实复盘库；真实场景沿用原有精炼记录；练习单独入库并可刷新恢复，练习趋势不会混入真实互动分数。</p>
   </aside>
 </section>
 
-<nav class="section-tabs chat-mobile-tabs" aria-label="盖洛普页面分区" role="tablist">
-  <button class="section-tab active" type="button" data-chat-view="conversation" role="tab" aria-selected="true">对话</button>
-  <button class="section-tab" type="button" data-chat-view="progress" role="tab" aria-selected="false">进步趋势</button>
-  <button class="section-tab" type="button" data-chat-view="memory" role="tab" aria-selected="false">复盘库</button>
+<nav class="section-tabs chat-mobile-tabs" aria-label="关系教练页面分区" role="tablist">
+  <button class="section-tab active" type="button" data-chat-view="conversation" role="tab" aria-selected="true">教练</button>
+  <button class="section-tab" type="button" data-chat-view="progress" role="tab" aria-selected="false">趋势</button>
+  <button class="section-tab" type="button" data-chat-view="memory" role="tab" aria-selected="false">记录</button>
 </nav>
 
 <section class="chat-layout">
   <div class="panel conversation-panel active" data-chat-panel="conversation">
+    <div class="coach-mode-switch" role="tablist" aria-label="教练模式">
+      <button type="button" class="active" data-coach-mode="qa" role="tab" aria-selected="true"><b>问答</b><small>理解一个问题</small></button>
+      <button type="button" data-coach-mode="review" role="tab" aria-selected="false"><b>场景复盘</b><small>保存真实事件</small></button>
+      <button type="button" data-coach-mode="practice" role="tab" aria-selected="false"><b>单人练习</b><small>AI 扮演对方</small></button>
+    </div>
+
     <div class="panel-heading chat-heading">
       <div>
-        <span class="eyebrow">盖洛普技能已注入</span>
-        <h2>场景复盘对话</h2>
+        <span class="eyebrow" id="coachModeEyebrow">不评分 · 不入真实复盘库</span>
+        <h2 id="coachModeTitle">关系问答</h2>
       </div>
       <div class="chat-heading-actions">
         <label class="model-picker speaker-picker" for="chatSpeaker">
-          <span>本次记录者</span>
+          <span id="speakerLabel">当前提问者</span>
           <select id="chatSpeaker">
             <option value="xiaoli">小娌</option>
             <option value="xiaoyuan">小元</option>
           </select>
-          <small>代词按所选姓名解析</small>
+          <small>AI 只按本次选择理解代词</small>
         </label>
         <label class="model-picker compact-model-picker" for="chatModel">
           <span>本次模型</span>
           <select id="chatModel"><option value="">正在加载模型…</option></select>
           <small id="chatModelHint">模型只在服务端调用</small>
         </label>
-        <button class="button subtle" id="newChat" type="button">新场景</button>
+        <button class="button subtle" id="newChat" type="button">新问题</button>
       </div>
     </div>
 
-    <div id="chatMessages" class="chat-messages" aria-live="polite">
-      <article class="chat-message assistant-message welcome-message">
-        <div class="message-avatar">析</div>
-        <div class="message-bubble">
-          <b>从一件具体的事开始</b>
-          <div class="message-copy">请先选择本次记录者，再直接写小娌与小元发生了什么、各自说了什么或做了什么。信息不够时，助手最多追问三个短问题，不需要填写评分表。</div>
+    <div id="chatWorkspace" class="coach-workspace">
+      <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
+
+      <div class="prompt-chips" id="promptChips" aria-label="示例问题"></div>
+
+      <form id="chatForm" class="chat-composer">
+        <label class="sr-only" for="chatInput">输入内容</label>
+        <textarea id="chatInput" rows="4" maxlength="5000"></textarea>
+        <div class="composer-footer">
+          <span id="chatStatus" class="muted">先直接问一个具体问题</span>
+          <button class="button primary" id="sendChat" type="submit">发送</button>
         </div>
-      </article>
+      </form>
     </div>
 
-    <div class="prompt-chips" aria-label="示例问题">
-      <button type="button" data-prompt="刚才小娌与小元因为一件小事起了冲突，事情是……">复盘刚才的冲突</button>
-      <button type="button" data-prompt="请分析这次小娌与小元各自真正期待的是什么。事情是……">看双方内在期待</button>
-      <button type="button" data-prompt="这次小娌说了……小元回应了……请分别反馈两个人的行为变化。">看双方行为变化</button>
-    </div>
+    <div id="practiceWorkspace" class="practice-workspace" hidden>
+      <section id="practiceSetup" class="practice-setup-card">
+        <div>
+          <span class="eyebrow">开始一轮单人练习</span>
+          <h3>只选一件很小、很具体的事</h3>
+          <p>AI 会扮演另一方。先确认练习目标，再依次练表达、核对复述和听取回应。</p>
+        </div>
+        <div class="practice-setup-grid">
+          <label>场景类型
+            <select id="practiceScene">
+              <option>日常交流</option><option>情感支持</option><option>共同活动</option>
+              <option>家庭责任</option><option>未来规划</option><option>仪式感</option>
+              <option>危机管理</option><option>边界修复</option><option>其他</option>
+            </select>
+          </label>
+          <label>这轮目标
+            <select id="practiceGoal">
+              <option value="">请选择</option><option>理解</option><option>修复</option>
+              <option>协商</option><option>设边界</option><option>改变具体行为</option>
+            </select>
+          </label>
+          <label class="practice-topic-field">一件具体小事
+            <textarea id="practiceTopic" rows="3" maxlength="500" placeholder="例如：刚才我说工作上的事情时，你连续看了几次手机。"></textarea>
+          </label>
+        </div>
+        <input type="hidden" id="practiceSourceId">
+        <button class="button primary" id="startPractice" type="button">创建并保存练习</button>
+      </section>
 
-    <form id="chatForm" class="chat-composer">
-      <label class="sr-only" for="chatInput">描述这次场景</label>
-      <textarea id="chatInput" rows="4" maxlength="5000" placeholder="例如：昨晚小娌想聊工作上的委屈，小元很快给了解决方案，然后去做别的事。小娌当时说……"></textarea>
-      <div class="composer-footer">
-        <span id="chatStatus" class="muted">一次只分析一个具体事件</span>
-        <button class="button primary" id="sendChat" type="submit">发送并分析</button>
-      </div>
-    </form>
+      <section id="practiceActive" hidden>
+        <div class="practice-context-card" id="practiceContext"></div>
+        <ol class="practice-step-cards" id="practiceStepCards" aria-label="练习步骤">
+          <li data-step-stage="narrowing_topic"><span>1</span><div><b>把事情说小</b><small>只写可观察事实</small></div></li>
+          <li data-step-stage="expression_draft"><span>2</span><div><b>20 秒表达</b><small>事实＋感受＋需要＋请求，不计时</small></div></li>
+          <li data-step-stage="paraphrase_confirmation"><span>3</span><div><b>AI 复述</b><small>由你确认是否准确</small></div></li>
+          <li data-step-stage="partner_response"><span>4</span><div><b>AI 回应</b><small>承认影响并明确答复</small></div></li>
+          <li data-step-stage="debrief"><span>5</span><div><b>本轮总结</b><small>练习结果与真实分数分开</small></div></li>
+        </ol>
+        <div id="practiceStage" class="practice-stage-card" aria-live="polite"></div>
+      </section>
+    </div>
   </div>
 
   <aside class="insight-sidebar">
     <section class="panel progress-panel" data-chat-panel="progress">
       <div class="panel-heading compact-heading">
-        <div><span class="eyebrow">自动反馈</span><h2>进步趋势</h2></div>
+        <div><span class="eyebrow">两类数据严格分开</span><h2>趋势</h2></div>
       </div>
-      <div id="progressSummary" class="progress-summary empty-state">完成第一条分析后显示趋势</div>
-      <div id="progressBars" class="participant-progress-list" aria-label="小娌与小元最近行为评分趋势"></div>
-      <p class="microcopy">分数只评价当次可观察行为，不评价人格或感情。</p>
+      <div class="trend-section">
+        <h3>真实互动趋势</h3>
+        <div id="progressSummary" class="progress-summary empty-state">完成第一条真实复盘后显示</div>
+        <div id="progressBars" class="participant-progress-list"></div>
+        <p class="microcopy">只来自真实事件中的可观察行为评分。</p>
+      </div>
+      <div class="trend-section practice-trend-section">
+        <h3>练习技能趋势</h3>
+        <div id="practiceProgress" class="practice-progress-list empty-state">完成第一轮练习后显示</div>
+        <p class="microcopy">仅统计“未尝试／需调整／已做到”，不产生关系分数。</p>
+      </div>
+      <div class="trend-section">
+        <h3>现实有效做法</h3>
+        <div id="strategyStats" class="strategy-stat-list empty-state">由你记录现实使用结果后统计</div>
+        <p class="microcopy">少于 5 次时只显示原始次数，不显示百分比。</p>
+      </div>
     </section>
 
     <section class="panel memory-panel" data-chat-panel="memory">
       <div class="panel-heading compact-heading">
-        <div><span class="eyebrow">只存精炼结论</span><h2>长期复盘库</h2></div>
-        <span class="muted" id="recordCount">0 条</span>
+        <div><span class="eyebrow">真实记录与练习会话</span><h2>记录</h2></div>
       </div>
-      <div class="memory-filters">
-        <input id="memorySearch" type="search" placeholder="模糊搜索：仪式感、被忽视、拖延……">
-        <select id="sceneFilter" aria-label="按场景筛选">
-          <option value="">全部场景</option>
-          <option value="仪式感">仪式感</option>
-          <option value="危机管理">危机管理</option>
-          <option value="情感支持">情感支持</option>
-          <option value="共同活动">共同活动</option>
-          <option value="家庭责任">家庭责任</option>
-          <option value="日常交流">日常交流</option>
-          <option value="未来规划">未来规划</option>
-          <option value="其他">其他</option>
-        </select>
+      <div class="record-type-tabs" role="tablist">
+        <button class="active" type="button" data-record-view="reviews">真实复盘 <span id="recordCount">0</span></button>
+        <button type="button" data-record-view="practices">练习历史 <span id="practiceCount">0</span></button>
       </div>
-      <div id="memoryList" class="memory-list empty-state">还没有精炼案例</div>
+      <div data-record-panel="reviews">
+        <div class="memory-filters">
+          <input id="memorySearch" type="search" placeholder="搜索真实复盘">
+          <select id="sceneFilter" aria-label="按场景筛选">
+            <option value="">全部场景</option><option>仪式感</option><option>危机管理</option>
+            <option>情感支持</option><option>共同活动</option><option>家庭责任</option>
+            <option>日常交流</option><option>未来规划</option><option>其他</option>
+          </select>
+        </div>
+        <div id="memoryList" class="memory-list empty-state">还没有精炼案例</div>
+      </div>
+      <div data-record-panel="practices" hidden>
+        <div id="practiceList" class="memory-list practice-history-list empty-state">还没有练习会话</div>
+      </div>
     </section>
   </aside>
 </section>
+
+<dialog id="outcomeDialog" class="outcome-dialog">
+  <form id="outcomeForm" method="dialog">
+    <div class="panel-heading compact-heading">
+      <div><span class="eyebrow">只记录你确认的现实结果</span><h2>这次表达用得怎么样？</h2></div>
+      <button class="dialog-close" type="button" data-close-dialog aria-label="关闭">×</button>
+    </div>
+    <input type="hidden" id="outcomeSessionId">
+    <label>使用日期<input id="outcomeUsedAt" type="date" required></label>
+    <fieldset class="outcome-result-options">
+      <legend>结果</legend>
+      <label><input type="radio" name="outcomeResult" value="helpful" required> 有帮助</label>
+      <label><input type="radio" name="outcomeResult" value="neutral"> 一般</label>
+      <label><input type="radio" name="outcomeResult" value="worse"> 变糟</label>
+    </fieldset>
+    <label>对方实际反应<textarea id="outcomeReaction" rows="3" maxlength="2000" placeholder="只写实际说了什么或做了什么"></textarea></label>
+    <div class="outcome-checks">
+      <label><input id="outcomeAgreement" type="checkbox"> 形成了明确约定</label>
+      <label><input id="outcomeReturned" type="checkbox"> 暂停后按约定回来继续</label>
+    </div>
+    <label>补充说明<textarea id="outcomeNote" rows="2" maxlength="2000"></textarea></label>
+    <div class="dialog-actions">
+      <button class="button subtle" type="button" data-close-dialog>取消</button>
+      <button class="button primary" type="submit">确认记录</button>
+    </div>
+  </form>
+</dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 {% endblock %}

@@ -1,4 +1,4 @@
 interface:
-  display_name: "盖洛普亲密关系复盘"
-  short_description: "用双方盖洛普才干状态分析冲突、沟通方式与长期进步趋势"
-  default_prompt: "使用 $gallup-relationship-review 复盘小娌与小元刚才的冲突，并给出下一句怎么说。"
+  display_name: "关系理解与沟通陪练"
+  short_description: "结合盖洛普画像进行关系问答、真实复盘与单人沟通练习"
+  default_prompt: "使用 $gallup-relationship-review 帮我理解一件关系问题，或陪我按表达、复述、回应的步骤练习。"
