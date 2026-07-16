@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}幸福记录 · 关系复盘{% endblock %}
+{% block content %}
+<section class="hero compact happiness-hero">
+  <div>
+    <span class="eyebrow">只记录 · 留给以后回看</span>
+    <h1>记下生活里的幸福</h1>
+    <p>不用分析原因，也不用变成任务。发生了一件想记住的好事，就把它留在这里。</p>
+  </div>
+  <aside class="principle-card">
+    <strong>记录边界</strong>
+    <p>幸福事件不会交给 AI 分析、评分或生成建议，只按日期保存。</p>
+  </aside>
+</section>
+
+<section class="happiness-layout">
+  <form class="panel happiness-form" id="happinessForm">
+    <div class="panel-heading compact-heading">
+      <div><span class="eyebrow">今天有什么好事</span><h2>新增幸福事件</h2></div>
+    </div>
+    <label>发生日期
+      <input id="happinessDate" type="date" required>
+    </label>
+    <label>想记住的事情
+      <textarea id="happinessContent" rows="7" maxlength="3000" required placeholder="例如：晚饭后一起散步，路上聊了很多轻松的小事。"></textarea>
+    </label>
+    <button class="button primary" id="saveHappiness" type="submit">保存这份幸福</button>
+  </form>
+
+  <section class="panel happiness-history">
+    <div class="panel-heading compact-heading">
+      <div><span class="eyebrow">按日期回看</span><h2>幸福回忆 <span id="happinessCount">0</span></h2></div>
+    </div>
+    <div id="happinessList" class="happiness-list empty-state" aria-live="polite">还没有幸福记录</div>
+  </section>
+</section>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='happiness.js', v=app_version) }}"></script>{% endblock %}

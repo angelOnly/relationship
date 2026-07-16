@@ -617,6 +617,19 @@ details.reflection summary { cursor: pointer; font-weight: 800; margin-bottom: 1
 .goal-card p { margin: 0; color: var(--muted); font-size: 13px; white-space: pre-wrap; }
 .goal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 13px; }
 .goal-actions .button { min-height: 36px; font-size: 12px; }
+
+.happiness-layout { display: grid; grid-template-columns: minmax(280px, .7fr) minmax(0, 1.3fr); gap: 24px; align-items: start; }
+.happiness-form, .happiness-history { padding: 28px; }
+.happiness-form { display: grid; gap: 16px; position: sticky; top: 86px; }
+.happiness-form .panel-heading, .happiness-history .panel-heading { margin-bottom: 4px; }
+.happiness-form label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; font-weight: 750; }
+.happiness-form .button { width: 100%; }
+.happiness-list { display: grid; gap: 12px; }
+.happiness-card { position: relative; padding: 17px 56px 17px 18px; border-radius: 16px; background: #faf7f3; }
+.happiness-card time { color: var(--accent); font-size: 12px; font-weight: 800; }
+.happiness-card p { margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.happiness-card button { position: absolute; top: 7px; right: 7px; min-width: 42px; min-height: 42px; padding: 8px; border: 0; background: transparent; color: var(--muted); font-size: 11px; }
+.happiness-card button:hover { color: var(--red); }
 .durable-rules { margin-bottom: 22px; }
 .archived-actions { padding: 20px 24px; margin-bottom: 22px; }
 .archived-actions summary { cursor: pointer; font-weight: 800; }
@@ -643,7 +656,7 @@ details.reflection summary { cursor: pointer; font-weight: 800; margin-bottom: 1
   .brand-mark { width: 34px; height: 34px; border-radius: 11px; }
   .brand strong { font-size: 15px; }
   .brand small { display: none; }
-  .main-nav { width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+  .main-nav { width: 100%; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
   .main-nav a { padding: 8px 4px; font-size: 12px; text-align: center; white-space: nowrap; background: rgba(255,255,255,.36); }
   .page-shell { padding: 19px 12px max(46px, env(safe-area-inset-bottom)); }
   .hero { gap: 16px; margin-bottom: 18px; }
@@ -728,6 +741,9 @@ details.reflection summary { cursor: pointer; font-weight: 800; margin-bottom: 1
   .ai-score-card { padding: 10px 5px; }
   .ai-score-card strong { font-size: 24px; }
   .action-goals-panel, .action-create-form { padding: 18px; }
+  .happiness-layout { grid-template-columns: 1fr; }
+  .happiness-form, .happiness-history { padding: 18px; }
+  .happiness-form { position: static; }
   .action-create-disclosure { overflow: hidden; }
   .action-create-disclosure > summary {
     display: flex;

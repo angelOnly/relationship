@@ -20,6 +20,7 @@
       </a>
       <nav class="main-nav" aria-label="主导航">
         <a href="/chat" class="nav-ai {% if request.path == '/chat' %}active{% endif %}">关系 AI</a>
+        <a href="/happiness" class="{% if request.path == '/happiness' %}active{% endif %}">幸福记录</a>
         <a href="/actions" class="{% if request.path == '/actions' %}active{% endif %}">行动清单</a>
         <a href="/journal" class="{% if request.path in ['/', '/journal'] %}active{% endif %}">每日记录</a>
       </nav>

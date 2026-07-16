@@ -12,9 +12,17 @@ from participants import JOINT_NAME
 DAILY_SCHEMA_KEY = "universal-daily"
 WEEKLY_SCHEMA_KEY = "universal-weekly"
 MONTHLY_SCHEMA_KEY = "universal-monthly"
+HAPPINESS_SCHEMA_KEY = "happiness-event"
 SCHEMA_VERSION = 2
 
 RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
+    "happiness": {
+        "key": HAPPINESS_SCHEMA_KEY,
+        "version": SCHEMA_VERSION,
+        "title": "幸福事件",
+        "description": "只记录生活中的幸福，供以后回顾。",
+        "fields": [{"name": "content", "label": "幸福的事", "type": "text"}],
+    },
     "daily": {
         "key": DAILY_SCHEMA_KEY,
         "version": SCHEMA_VERSION,
@@ -327,6 +335,22 @@ def soft_delete_record(
         WHERE record_type = ? AND period_key = ? AND author = ? AND deleted_at = ''
         """,
         (now, now, record_type, period_key, author),
+    )
+    return cursor.rowcount > 0
+
+
+def soft_delete_record_by_id(
+    conn: sqlite3.Connection,
+    record_type: str,
+    record_id: int,
+) -> bool:
+    now = datetime.now().isoformat(timespec="seconds")
+    cursor = conn.execute(
+        """
+        UPDATE record_documents SET deleted_at = ?, updated_at = ?
+        WHERE id = ? AND record_type = ? AND deleted_at = ''
+        """,
+        (now, now, record_id, record_type),
     )
     return cursor.rowcount > 0
 

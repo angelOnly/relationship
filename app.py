@@ -27,6 +27,7 @@ from journal_store import (
     list_records,
     serialize_record,
     soft_delete_record,
+    soft_delete_record_by_id,
     update_action_item,
     upsert_ai_goal,
     upsert_record,
@@ -81,7 +82,7 @@ from practice_store import (
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 DB_PATH = DATA_DIR / "relationship.db"
-APP_VERSION = os.getenv("APP_VERSION", "5.1.0")
+APP_VERSION = os.getenv("APP_VERSION", "5.2.0")
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
@@ -175,6 +176,11 @@ def journal_page():
 @app.get("/chat")
 def chat_page():
     return render_template("chat.html")
+
+
+@app.get("/happiness")
+def happiness_page():
+    return render_template("happiness.html")
 
 
 @app.get("/api/models")
@@ -1039,6 +1045,50 @@ def delete_entry(entry_date: str, participant_key: str):
         return jsonify({"error": "人物标识无效。"}), 400
     with closing(get_conn()) as conn:
         deleted = soft_delete_record(conn, "daily", entry_date, participant["name"])
+        conn.commit()
+    return jsonify({"ok": True, "deleted": deleted})
+
+
+@app.get("/api/happiness-events")
+def list_happiness_events():
+    with closing(get_conn()) as conn:
+        records = list_records(conn, "happiness")
+    return jsonify([happiness_record_to_api(record) for record in records])
+
+
+@app.post("/api/happiness-events")
+def create_happiness_event():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "请求内容必须是 JSON 对象。"}), 400
+    event_date = clean_text(data.get("event_date"))
+    content = clean_text(data.get("content"))
+    try:
+        if date.fromisoformat(event_date).isoformat() != event_date:
+            raise ValueError
+    except ValueError:
+        return jsonify({"error": "请选择有效的发生日期。"}), 400
+    if not content:
+        return jsonify({"error": "请写下想记住的事情。"}), 400
+    if len(content) > 3000:
+        return jsonify({"error": "幸福事件请控制在 3000 字以内。"}), 400
+
+    with closing(get_conn()) as conn:
+        record = upsert_record(
+            conn,
+            record_type="happiness",
+            period_key=f"{event_date}:{uuid.uuid4().hex}",
+            author=JOINT_NAME,
+            data={"content": content},
+        )
+        conn.commit()
+    return jsonify(happiness_record_to_api(record)), 201
+
+
+@app.delete("/api/happiness-events/<int:event_id>")
+def delete_happiness_event(event_id: int):
+    with closing(get_conn()) as conn:
+        deleted = soft_delete_record_by_id(conn, "happiness", event_id)
         conn.commit()
     return jsonify({"ok": True, "deleted": deleted})
 
@@ -2055,6 +2105,15 @@ def daily_record_to_api(record: dict[str, Any]) -> dict[str, Any]:
         "revision": record.get("revision", 0),
         "created_at": record.get("created_at", ""),
         "updated_at": record.get("updated_at", ""),
+    }
+
+
+def happiness_record_to_api(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": record.get("id"),
+        "event_date": clean_text(record.get("period_key")).partition(":")[0],
+        "content": clean_text(record.get("data", {}).get("content")),
+        "created_at": record.get("created_at", ""),
     }
 
 

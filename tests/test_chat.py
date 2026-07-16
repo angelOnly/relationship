@@ -426,6 +426,62 @@ class ChatApiTestCase(unittest.TestCase):
         self.assertIn("period_reviews", backup)
         self.assertNotIn("analysis_records", backup)
 
+    def test_happiness_events_keep_same_day_items_and_join_backup(self) -> None:
+        page = self.client.get("/happiness")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("只记录 · 留给以后回看", page.get_data(as_text=True))
+
+        older = self.client.post(
+            "/api/happiness-events",
+            json={"event_date": "2026-07-15", "content": "收到一束花"},
+        )
+        first = self.client.post(
+            "/api/happiness-events",
+            json={"event_date": "2026-07-16", "content": "一起吃了喜欢的早餐"},
+        )
+        second = self.client.post(
+            "/api/happiness-events",
+            json={"event_date": "2026-07-16", "content": "散步时看见晚霞"},
+        )
+
+        self.assertEqual((first.status_code, second.status_code, older.status_code), (201, 201, 201))
+        events = self.client.get("/api/happiness-events").get_json()
+        self.assertEqual([event["event_date"] for event in events], ["2026-07-16", "2026-07-16", "2026-07-15"])
+        self.assertEqual({event["content"] for event in events[:2]}, {"一起吃了喜欢的早餐", "散步时看见晚霞"})
+        self.assertEqual(set(events[0]), {"id", "event_date", "content", "created_at"})
+
+        backup = self.client.get("/api/backup.json").get_json()
+        happiness_records = [
+            record for record in backup["record_documents"]
+            if record["record_type"] == "happiness"
+        ]
+        self.assertEqual(len(happiness_records), 3)
+        self.assertEqual({record["author"] for record in happiness_records}, {"共同"})
+        self.assertEqual(
+            {record["data"]["content"] for record in happiness_records},
+            {"一起吃了喜欢的早餐", "散步时看见晚霞", "收到一束花"},
+        )
+
+        deleted = self.client.delete(f"/api/happiness-events/{first.get_json()['id']}")
+        self.assertEqual(deleted.get_json(), {"ok": True, "deleted": True})
+        remaining_ids = {event["id"] for event in self.client.get("/api/happiness-events").get_json()}
+        self.assertNotIn(first.get_json()["id"], remaining_ids)
+        self.assertIn(second.get_json()["id"], remaining_ids)
+        self.assertEqual(
+            self.client.post(
+                "/api/happiness-events",
+                json={"event_date": "2026-02-30", "content": "无效日期"},
+            ).status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/happiness-events",
+                json={"event_date": "2026-07-16", "content": "  "},
+            ).status_code,
+            400,
+        )
+
     @patch("app.review_journal_period")
     def test_daily_period_review_persists_two_json_objects(self, mock_review) -> None:
         mock_review.return_value = period_review_result()
