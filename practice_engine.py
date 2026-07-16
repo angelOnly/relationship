@@ -50,7 +50,10 @@ def allowed_actions(session: dict[str, Any]) -> list[str]:
         return ["delete_session"]
     if status == "abandoned":
         return ["delete_session"]
-    return list(ALLOWED_ACTIONS.get(str(session.get("stage")), []))
+    actions = list(ALLOWED_ACTIONS.get(str(session.get("stage")), []))
+    if session.get("goal") == "练习表达" and session.get("stage") == "expression_draft":
+        actions.insert(0, "submit_action_attempt")
+    return actions
 
 
 def step_card(stage: str) -> dict[str, Any]:

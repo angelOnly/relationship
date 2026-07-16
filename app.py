@@ -81,7 +81,7 @@ from practice_store import (
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 DB_PATH = DATA_DIR / "relationship.db"
-APP_VERSION = os.getenv("APP_VERSION", "5.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "5.1.0")
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
@@ -199,7 +199,7 @@ def get_active_record_schema(record_type: str):
 @app.post("/api/chat")
 def chat_with_coach():
     data = request.get_json(silent=True) or {}
-    mode = clean_text(data.get("mode")) or "review"
+    mode = clean_text(data.get("mode")) or "qa"
     if mode not in {"qa", "review"}:
         return jsonify({"error": "问答模式无效。"}), 400
     message = clean_text(data.get("message"))
@@ -215,7 +215,7 @@ def chat_with_coach():
     if speaker is None:
         return jsonify({"error": "本次记录者必须是小娌或小元。"}), 400
     history = normalize_chat_history(data.get("history"))
-    memories = build_coach_memories(message, speaker["id"], limit=5)
+    memories = [] if mode == "qa" else build_coach_memories(message, speaker["id"], limit=5)
 
     try:
         model_name = resolve_model_name(clean_text(data.get("model")) or None)
@@ -249,7 +249,7 @@ def chat_with_coach():
 @app.post("/api/chat/stream")
 def stream_chat_with_coach():
     data = request.get_json(silent=True) or {}
-    mode = clean_text(data.get("mode")) or "review"
+    mode = clean_text(data.get("mode")) or "qa"
     if mode not in {"qa", "review"}:
         return jsonify({"error": "问答模式无效。"}), 400
     message = clean_text(data.get("message"))
@@ -265,7 +265,7 @@ def stream_chat_with_coach():
     if speaker is None:
         return jsonify({"error": "本次记录者必须是小娌或小元。"}), 400
     history = normalize_chat_history(data.get("history"))
-    memories = build_coach_memories(message, speaker["id"], limit=5)
+    memories = [] if mode == "qa" else build_coach_memories(message, speaker["id"], limit=5)
     try:
         model_name = resolve_model_name(clean_text(data.get("model")) or None)
     except AIModelError as exc:
@@ -470,7 +470,7 @@ PRACTICE_SCENE_TYPES = {
     "边界修复",
     "其他",
 }
-PRACTICE_GOALS = {"理解", "修复", "协商", "设边界", "改变具体行为"}
+PRACTICE_GOALS = {"理解", "修复", "协商", "设边界", "改变具体行为", "练习表达"}
 
 
 @app.post("/api/practice-sessions")
@@ -485,8 +485,11 @@ def start_practice_session():
         scene_type = "其他"
     topic_summary = clean_text(data.get("topic_summary"))[:500]
     goal = clean_text(data.get("goal"))
+    initial_expression = clean_text(data.get("initial_expression"))[:5000]
     if goal and goal not in PRACTICE_GOALS:
         return jsonify({"error": "请选择一个明确的练习目标。"}), 400
+    if goal == "练习表达" and not initial_expression:
+        return jsonify({"error": "请先写下你当时说的话，或平时会怎么说。"}), 400
     source_id = data.get("source_scene_analysis_id")
     try:
         source_id = int(source_id) if source_id not in {None, ""} else None
@@ -508,6 +511,8 @@ def start_practice_session():
             topic_summary = topic_summary or source["question_summary"]
             if scene_type == "其他" and source["scene_type"] in PRACTICE_SCENE_TYPES:
                 scene_type = source["scene_type"]
+        if goal == "练习表达" and not topic_summary:
+            return jsonify({"error": "请先写下你想练习的问题。"}), 400
         session = create_practice_session(
             conn,
             {
@@ -520,8 +525,25 @@ def start_practice_session():
                 "model_name": model_name,
             },
         )
+        if goal == "练习表达":
+            session = update_practice_session(conn, session["id"], stage="expression_draft")
         conn.commit()
-    return jsonify(public_practice_state(session)), 201
+    if goal != "练习表达":
+        return jsonify(public_practice_state(session)), 201
+
+    try:
+        payload = _advance_practice_session(
+            session["id"],
+            f"session-{session['id']}-initial-expression",
+            "submit_action_attempt",
+            {"expected_stage": "expression_draft", "content": initial_expression},
+        )
+    except (PracticeValidationError, PracticeConflictError, AIConfigError, AIServiceError) as exc:
+        with closing(get_conn()) as conn:
+            delete_practice_session(conn, session["id"])
+            conn.commit()
+        return jsonify({"error": str(exc)}), 502
+    return jsonify(payload["session"]), 201
 
 
 @app.get("/api/practice-sessions")
@@ -532,6 +554,9 @@ def get_practice_sessions():
     status = clean_text(request.args.get("status"))
     if status and status not in {"active", "paused", "completed", "abandoned", "safety_stop"}:
         return jsonify({"error": "练习状态参数无效。"}), 400
+    goal = clean_text(request.args.get("goal"))
+    if goal and goal not in PRACTICE_GOALS:
+        return jsonify({"error": "练习目标参数无效。"}), 400
     try:
         limit = max(1, min(int(request.args.get("limit", 30)), 100))
     except ValueError:
@@ -541,6 +566,7 @@ def get_practice_sessions():
             conn,
             speaker_id=speaker_id_value,
             status=status,
+            goal=goal,
             limit=limit,
         )
     return jsonify([public_practice_state(item) for item in sessions])
@@ -689,7 +715,7 @@ def _advance_practice_session(
             conn.commit()
             return {"session": public_practice_state(session), "reply": "练习已结束并保留在历史中。"}
 
-        if action in {"submit_topic", "submit_expression", "use_suggestion"}:
+        if action in {"submit_topic", "submit_expression", "submit_action_attempt", "use_suggestion"}:
             content = require_text(content, "本步骤内容")
         if action in {"confirm_partial", "confirm_inaccurate"}:
             correction = require_text(correction or content, "需要修正的一句话", 2000)
@@ -734,6 +760,19 @@ def _advance_practice_session(
 
         if result.get("status") == "safety_stop":
             session = update_practice_session(conn, session_id, status="safety_stop")
+        elif action == "submit_action_attempt":
+            feedback = result.get("attempt_feedback", {})
+            now = datetime.now().isoformat(timespec="seconds")
+            session = update_practice_session(
+                conn,
+                session_id,
+                stage="completed",
+                status="completed",
+                final_expression=clean_text(feedback.get("suggested_version")) or content,
+                strategy_tags=result.get("strategy_tags", []) or session["strategy_tags"],
+                skill_results={},
+                completed_at=now,
+            )
         elif action == "submit_topic":
             feedback = result.get("attempt_feedback", {})
             session = update_practice_session(
@@ -1385,9 +1424,10 @@ def health():
                 "dynamic_actions": True,
                 "participant_arrays": True,
                 "calendar_journal": True,
-                "coach_modes": ["qa", "review", "practice"],
+                "coach_modes": ["qa", "practice"],
                 "practice_persistence": True,
-                "practice_step_cards": True,
+                "practice_step_cards": False,
+                "expression_practice_cards": True,
                 "real_world_outcomes": True,
                 "separate_practice_trends": True,
             },

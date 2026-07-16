@@ -1,15 +1,15 @@
 {% extends "base.html" %}
-{% block title %}关系教练 · 问答、复盘与练习{% endblock %}
+{% block title %}关系 AI · 直接问答与表达练习{% endblock %}
 {% block content %}
 <section class="hero chat-hero">
   <div>
-    <span class="eyebrow">问答 · 真实复盘 · 单人练习</span>
+    <span class="eyebrow">直接问答 · 表达练习</span>
     <h1>先看见彼此，再练一句能被听见的话</h1>
-    <p>你可以直接问关系问题、复盘一件真实发生的小事，或让 AI 扮演另一方，完成“表达＋复述确认＋回应”的单人练习。</p>
+    <p>想知道怎么看、怎么办，就直接问；想学会怎么说，就练习自己的真实原话。</p>
   </div>
   <aside class="principle-card chat-principle">
     <strong>数据边界</strong>
-    <p>问答不评分、不入真实复盘库；真实场景沿用原有精炼记录；练习单独入库并可刷新恢复，练习趋势不会混入真实互动分数。</p>
+    <p>直接问答不入库；表达练习只记录原话、改写和现实结果，不混入关系评分。</p>
   </aside>
 </section>
 
@@ -22,15 +22,14 @@
 <section class="chat-layout">
   <div class="panel conversation-panel active" data-chat-panel="conversation">
     <div class="coach-mode-switch" role="tablist" aria-label="教练模式">
-      <button type="button" class="active" data-coach-mode="qa" role="tab" aria-selected="true"><b>问答</b><small>理解一个问题</small></button>
-      <button type="button" data-coach-mode="review" role="tab" aria-selected="false"><b>场景复盘</b><small>保存真实事件</small></button>
-      <button type="button" data-coach-mode="practice" role="tab" aria-selected="false"><b>单人练习</b><small>AI 扮演对方</small></button>
+      <button type="button" class="active" data-coach-mode="qa" role="tab" aria-selected="true"><b>直接问答</b><small>只要建议用这里</small></button>
+      <button type="button" data-coach-mode="practice" role="tab" aria-selected="false"><b>表达练习</b><small>原话、换位、改写</small></button>
     </div>
 
     <div class="panel-heading chat-heading">
       <div>
-        <span class="eyebrow" id="coachModeEyebrow">不评分 · 不入真实复盘库</span>
-        <h2 id="coachModeTitle">关系问答</h2>
+        <span class="eyebrow" id="coachModeEyebrow">直接回答 · 不评分 · 不保存</span>
+        <h2 id="coachModeTitle">直接问答</h2>
       </div>
       <div class="chat-heading-actions">
         <label class="model-picker speaker-picker" for="chatSpeaker">
@@ -68,41 +67,25 @@
     <div id="practiceWorkspace" class="practice-workspace" hidden>
       <section id="practiceSetup" class="practice-setup-card">
         <div>
-          <span class="eyebrow">开始一轮单人练习</span>
-          <h3>只选一件很小、很具体的事</h3>
-          <p>AI 会扮演另一方。先确认练习目标，再依次练表达、核对复述和听取回应。</p>
+          <span class="eyebrow">练习怎么说，也练习对方会怎么听</span>
+          <h3>写下你想练习表达的那件事</h3>
+          <p>一次把事情和原话写清楚。提交后直接看问题、对方可能听到什么，以及更好的说法。</p>
         </div>
         <div class="practice-setup-grid">
-          <label>场景类型
-            <select id="practiceScene">
-              <option>日常交流</option><option>情感支持</option><option>共同活动</option>
-              <option>家庭责任</option><option>未来规划</option><option>仪式感</option>
-              <option>危机管理</option><option>边界修复</option><option>其他</option>
-            </select>
+          <input id="practiceScene" type="hidden" value="其他">
+          <input id="practiceGoal" type="hidden" value="练习表达">
+          <label class="practice-topic-field">想练习的事情
+            <textarea id="practiceTopic" rows="4" maxlength="500" placeholder="例如：我说工作上的烦恼时，对方马上开始给方案，我会觉得自己没有被听见。"></textarea>
           </label>
-          <label>这轮目标
-            <select id="practiceGoal">
-              <option value="">请选择</option><option>理解</option><option>修复</option>
-              <option>协商</option><option>设边界</option><option>改变具体行为</option>
-            </select>
-          </label>
-          <label class="practice-topic-field">一件具体小事
-            <textarea id="practiceTopic" rows="3" maxlength="500" placeholder="例如：刚才我说工作上的事情时，你连续看了几次手机。"></textarea>
+          <label class="practice-topic-field">你当时说了什么，或平时会怎么说
+            <textarea id="practiceExpression" rows="3" maxlength="3000" placeholder="例如：你每次都只会讲道理，根本不在乎我的感受。"></textarea>
           </label>
         </div>
-        <input type="hidden" id="practiceSourceId">
-        <button class="button primary" id="startPractice" type="button">创建并保存练习</button>
+        <button class="button primary" id="startPractice" type="button">开始表达练习</button>
       </section>
 
       <section id="practiceActive" hidden>
         <div class="practice-context-card" id="practiceContext"></div>
-        <ol class="practice-step-cards" id="practiceStepCards" aria-label="练习步骤">
-          <li data-step-stage="narrowing_topic"><span>1</span><div><b>把事情说小</b><small>只写可观察事实</small></div></li>
-          <li data-step-stage="expression_draft"><span>2</span><div><b>20 秒表达</b><small>事实＋感受＋需要＋请求，不计时</small></div></li>
-          <li data-step-stage="paraphrase_confirmation"><span>3</span><div><b>AI 复述</b><small>由你确认是否准确</small></div></li>
-          <li data-step-stage="partner_response"><span>4</span><div><b>AI 回应</b><small>承认影响并明确答复</small></div></li>
-          <li data-step-stage="debrief"><span>5</span><div><b>本轮总结</b><small>练习结果与真实分数分开</small></div></li>
-        </ol>
         <div id="practiceStage" class="practice-stage-card" aria-live="polite"></div>
       </section>
     </div>
@@ -110,20 +93,7 @@
 
   <aside class="insight-sidebar">
     <section class="panel progress-panel" data-chat-panel="progress">
-      <div class="panel-heading compact-heading">
-        <div><span class="eyebrow">两类数据严格分开</span><h2>趋势</h2></div>
-      </div>
-      <div class="trend-section">
-        <h3>真实互动趋势</h3>
-        <div id="progressSummary" class="progress-summary empty-state">完成第一条真实复盘后显示</div>
-        <div id="progressBars" class="participant-progress-list"></div>
-        <p class="microcopy">只来自真实事件中的可观察行为评分。</p>
-      </div>
-      <div class="trend-section practice-trend-section">
-        <h3>练习技能趋势</h3>
-        <div id="practiceProgress" class="practice-progress-list empty-state">完成第一轮练习后显示</div>
-        <p class="microcopy">仅统计“未尝试／需调整／已做到”，不产生关系分数。</p>
-      </div>
+      <div class="panel-heading compact-heading"><div><span class="eyebrow">只统计现实使用结果</span><h2>练习效果</h2></div></div>
       <div class="trend-section">
         <h3>现实有效做法</h3>
         <div id="strategyStats" class="strategy-stat-list empty-state">由你记录现实使用结果后统计</div>
@@ -132,27 +102,8 @@
     </section>
 
     <section class="panel memory-panel" data-chat-panel="memory">
-      <div class="panel-heading compact-heading">
-        <div><span class="eyebrow">真实记录与练习会话</span><h2>记录</h2></div>
-      </div>
-      <div class="record-type-tabs" role="tablist">
-        <button class="active" type="button" data-record-view="reviews">真实复盘 <span id="recordCount">0</span></button>
-        <button type="button" data-record-view="practices">练习历史 <span id="practiceCount">0</span></button>
-      </div>
-      <div data-record-panel="reviews">
-        <div class="memory-filters">
-          <input id="memorySearch" type="search" placeholder="搜索真实复盘">
-          <select id="sceneFilter" aria-label="按场景筛选">
-            <option value="">全部场景</option><option>仪式感</option><option>危机管理</option>
-            <option>情感支持</option><option>共同活动</option><option>家庭责任</option>
-            <option>日常交流</option><option>未来规划</option><option>其他</option>
-          </select>
-        </div>
-        <div id="memoryList" class="memory-list empty-state">还没有精炼案例</div>
-      </div>
-      <div data-record-panel="practices" hidden>
-        <div id="practiceList" class="memory-list practice-history-list empty-state">还没有练习会话</div>
-      </div>
+      <div class="panel-heading compact-heading"><div><span class="eyebrow">只显示新版单次表达练习</span><h2>练习历史 <span id="practiceCount">0</span></h2></div></div>
+      <div id="practiceList" class="memory-list practice-history-list empty-state">还没有表达练习</div>
     </section>
   </aside>
 </section>

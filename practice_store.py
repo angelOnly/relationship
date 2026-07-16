@@ -152,6 +152,7 @@ def list_practice_sessions(
     *,
     speaker_id: str = "",
     status: str = "",
+    goal: str = "",
     limit: int = 30,
 ) -> list[dict[str, Any]]:
     clauses: list[str] = []
@@ -162,6 +163,9 @@ def list_practice_sessions(
     if status:
         clauses.append("status = ?")
         params.append(status)
+    if goal:
+        clauses.append("goal = ?")
+        params.append(goal)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(limit)
     rows = conn.execute(
@@ -315,7 +319,7 @@ def get_practice_progress(conn: sqlite3.Connection) -> dict[str, Any]:
         """
         SELECT skill_result_json, completed_at
         FROM practice_sessions
-        WHERE status = 'completed'
+        WHERE status = 'completed' AND skill_result_json <> '{}'
         ORDER BY completed_at DESC, updated_at DESC
         """
     ).fetchall()

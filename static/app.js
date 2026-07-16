@@ -520,7 +520,7 @@ async function generateAiReview(periodType, periodKey, targetSelector, button) {
       body: JSON.stringify({
         period_type: periodType,
         period_key: periodKey,
-        model: localStorage.getItem(MODEL_STORAGE_KEY) || "",
+        model: localStorage.getItem(`${MODEL_STORAGE_KEY}-qa`) || localStorage.getItem(MODEL_STORAGE_KEY) || "",
       }),
     });
     renderAiReview(review, target);

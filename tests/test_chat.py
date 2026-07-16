@@ -9,7 +9,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app as journal_app
-from relationship_ai import AIConfigError
+from relationship_ai import (
+    AIConfigError,
+    _parse_coach_response,
+    analyze_relationship,
+    build_messages,
+    stream_relationship_analysis,
+)
 
 
 def participant_record(
@@ -125,32 +131,104 @@ class ChatApiTestCase(unittest.TestCase):
         self.temp_dir.cleanup()
         self.env_patcher.stop()
 
-    @patch("app.analyze_relationship")
-    def test_clarification_turn_is_not_persisted(self, mock_analyze) -> None:
-        mock_analyze.return_value = {
-            "status": "clarifying",
-            "reply": "请确认本次记录者是小娌还是小元，并补充当时具体说了什么。",
-            "record": None,
-        }
-        response = self.client.post(
-            "/api/chat",
-            json={
-                "conversation_id": "conversation01",
-                "turn_id": "turn000001",
-                "message": "我们吵架了。",
-                "history": [],
-            },
+    def test_qa_uses_a_lean_prompt_and_accepts_one_complete_reply(self) -> None:
+        messages = build_messages("结合盖洛普看，我为什么容易急着推进？", [], [], mode="qa")
+        system_prompt = messages[0]["content"]
+        self.assertIn("profiles.md", system_prompt)
+        self.assertNotIn("relationship-context.md", system_prompt)
+        self.assertNotIn("scenarios.md", system_prompt)
+        self.assertNotIn("method-lenses.md", system_prompt)
+        parsed = _parse_coach_response(
+            '{"status":"complete","reply":"你更可能是在用推进换确定感。先确认对方是否准备好讨论。","source_labels":[]}',
+            "qa",
         )
-        self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.get_json()["analysis_saved"])
-        with closing(journal_app.get_conn()) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM scene_analyses").fetchone()[0]
-        self.assertEqual(count, 0)
+        self.assertEqual(parsed["reply"], "你更可能是在用推进换确定感。先确认对方是否准备好讨论。")
+        self.assertIsNone(parsed["answer"])
+
+    def test_general_qa_does_not_load_gallup_profiles(self) -> None:
+        messages = build_messages("为什么我们越解释越生气？", [], [], mode="qa")
+        self.assertNotIn("profiles.md", messages[0]["content"])
+
+    def test_gallup_follow_up_keeps_profiles_loaded(self) -> None:
+        history = [
+            {"role": "user", "content": "结合盖洛普看我为什么容易急着推进？"},
+            {"role": "assistant", "content": "这可能和行动、追求有关。"},
+        ]
+        messages = build_messages("那小元呢？", history, [], mode="qa")
+        self.assertIn("profiles.md", messages[0]["content"])
+
+    @patch("relationship_ai._stream_chat_completion_chunks")
+    def test_qa_streams_reply_before_a_later_status_field(self, mock_stream) -> None:
+        mock_stream.return_value = iter(
+            ['{"reply":"先', '回答","status":"complete","source_labels":[]}']
+        )
+        events = stream_relationship_analysis(
+            "怎么说更容易被听见？",
+            [],
+            [],
+            model_name="gemini-3.1-pro-high",
+            mode="qa",
+        )
+        first = next(events)
+        self.assertEqual(first, {"type": "delta", "text": "先"})
+        remaining = list(events)
+        visible = "".join(
+            item["text"]
+            for item in [first, *remaining]
+            if item["type"] == "delta"
+        )
+        self.assertEqual(visible, "先回答")
+        self.assertEqual(remaining[-1]["result"]["status"], "complete")
+
+    def test_review_rejects_clarification_output(self) -> None:
+        parsed = _parse_coach_response(
+            '{"status":"clarifying","reply":"请补充当时具体说了什么。","record":null}',
+            "review",
+        )
+        self.assertIsNone(parsed)
+
+    @patch("relationship_ai._call_chat_completions")
+    def test_review_repairs_clarification_into_complete_analysis(self, mock_call) -> None:
+        mock_call.side_effect = [
+            '{"status":"clarifying","reply":"请补充更多细节。","record":null}',
+            json.dumps(complete_result(), ensure_ascii=False),
+        ]
+        result = analyze_relationship(
+            "昨晚吃饭时小元一直点评菜，小娌觉得被忽视。",
+            [],
+            [],
+            model_name="gemini-3.1-pro-high",
+            mode="review",
+        )
+        self.assertEqual(result["status"], "complete")
+        self.assertIn("不要继续提问", mock_call.call_args_list[1].args[0][-1]["content"])
+
+    @patch("relationship_ai._call_chat_completions")
+    @patch("relationship_ai._stream_chat_completion_chunks")
+    def test_review_stream_hides_rejected_clarification(
+        self, mock_stream, mock_call
+    ) -> None:
+        mock_stream.return_value = iter(
+            ['{"status":"clarifying","reply":"请补充更多细节。","record":null}']
+        )
+        mock_call.return_value = json.dumps(complete_result(), ensure_ascii=False)
+        events = list(
+            stream_relationship_analysis(
+                "昨晚吃饭时小元一直点评菜，小娌觉得被忽视。",
+                [],
+                [],
+                model_name="gemini-3.1-pro-high",
+                mode="review",
+            )
+        )
+        self.assertFalse(any(event["type"] == "delta" for event in events))
+        self.assertEqual(events[-1]["result"]["status"], "complete")
 
     @patch("app.analyze_relationship")
     def test_complete_analysis_uses_participant_arrays_and_is_saved_once(self, mock_analyze) -> None:
         mock_analyze.return_value = complete_result()
         payload = {
+            "mode": "review",
             "conversation_id": "conversation01",
             "turn_id": "turn000002",
             "message": "昨晚吃饭时小元一直点评菜，小娌觉得被忽视。",
@@ -203,6 +281,7 @@ class ChatApiTestCase(unittest.TestCase):
         self.client.post(
             "/api/chat",
             json={
+                "mode": "review",
                 "conversation_id": "conversation02",
                 "turn_id": "turn000003",
                 "message": "晚餐时小娌觉得被忽视。",
