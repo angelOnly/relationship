@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 
-{% macro daily_form(form_id, participant_id, participant_name, state_id) %}
-<form class="panel entry-form {{ participant_id }}-panel" id="{{ form_id }}" data-participant-id="{{ participant_id }}">
+{% macro daily_form() %}
+<form class="panel entry-form" id="dailyEntryForm" data-participant-id="xiaoli">
   <div class="panel-heading sticky-heading">
-    <div><span class="person-tag">{{ participant_name }}</span><h2>{{ participant_name }}的当日记录</h2></div>
-    <span class="save-state" id="{{ state_id }}">未保存</span>
+    <div><span class="person-tag" id="entryParticipantTag">小娌</span><h2 id="entryFormHeading">小娌的当日记录</h2></div>
+    <span class="save-state" id="dailyEntrySaveState">未保存</span>
   </div>
   <p class="schema-note"><b>只记录这一天</b> · 写事实、感受、需要和下一步；不要求每天有冲突，也不要求自己打分。</p>
-  <nav class="section-tabs entry-step-tabs" aria-label="{{ participant_name }}记录步骤" role="tablist">
+  <nav class="section-tabs entry-step-tabs" aria-label="记录步骤" role="tablist">
     <button class="section-tab active" type="button" data-entry-view="context" role="tab" aria-selected="true">观察与感受</button>
     <button class="section-tab" type="button" data-entry-view="response" role="tab" aria-selected="false">沟通与下一步</button>
   </nav>
@@ -44,8 +44,8 @@
     </label>
   </div>
   <div class="form-actions">
-    <button type="button" class="button danger ghost" data-delete="{{ participant_id }}">清空这一天</button>
-    <button type="submit" class="button primary">保存{{ participant_name }}的记录</button>
+    <button type="button" class="button danger ghost" id="deleteDailyEntry">清空小娌的记录</button>
+    <button type="submit" class="button primary" id="saveDailyEntry">保存小娌的记录</button>
   </div>
 </form>
 {% endmacro %}
@@ -104,27 +104,28 @@
       <p id="selectedDateHint" class="muted">分别写下双方所见，再让 AI 反馈可观察的互动。</p>
     </div>
   </div>
-  <nav class="section-tabs workspace-tabs" aria-label="当日工作区" role="tablist">
-    <button class="section-tab active" type="button" data-day-view="xiaoli" role="tab" aria-selected="true">小娌记录</button>
-    <button class="section-tab" type="button" data-day-view="xiaoyuan" role="tab" aria-selected="false">小元记录</button>
-    <button class="section-tab" type="button" data-day-view="review" role="tab" aria-selected="false">AI 反馈</button>
-  </nav>
-  <div class="day-content-panel" data-day-panel="xiaoli">
-    {{ daily_form('xiaoliForm', 'xiaoli', '小娌', 'xiaoliSaveState') }}
+  <div class="entry-person-control" aria-label="选择记录者">
+    <span class="entry-person-label">记录谁</span>
+    <div class="entry-person-picker" role="group" aria-label="选择小娌或小元">
+      <button class="entry-person-option active" type="button" data-entry-participant="xiaoli" aria-pressed="true">小娌</button>
+      <button class="entry-person-option" type="button" data-entry-participant="xiaoyuan" aria-pressed="false">小元</button>
+    </div>
   </div>
-  <div class="day-content-panel" data-day-panel="xiaoyuan" hidden>
-    {{ daily_form('xiaoyuanForm', 'xiaoyuan', '小元', 'xiaoyuanSaveState') }}
-  </div>
-  <div class="day-content-panel" data-day-panel="review" hidden>
-    <section class="panel ai-review-panel daily-ai-review">
-      <div class="panel-heading compact-heading">
-        <div><span class="eyebrow">保存至少一份记录后生成</span><h2>当日 AI 评分与反馈</h2></div>
-        <button type="button" class="button primary" id="dailyAiReview">分析这一天</button>
-      </div>
+  {{ daily_form() }}
+  <details class="panel daily-ai-review-disclosure" id="dailyAiReviewDisclosure">
+    <summary>
+      <span>
+        <i class="period-kicker">AI</i>
+        <strong>当日 AI 评分与反馈</strong>
+        <small>保存至少一份记录后，按需生成</small>
+      </span>
+    </summary>
+    <div class="daily-ai-review-content">
       <p class="ai-review-hint">AI 分别评价小娌与小元当天的可观察行为，并给出下一步的唯一重点。模型选择沿用“盖洛普 AI 对话”页的设置。</p>
+      <button type="button" class="button primary" id="dailyAiReview">分析这一天</button>
       <div id="dailyAiReviewResult" class="ai-review-result empty-state">还没有生成当日复盘</div>
-    </section>
-  </div>
+    </div>
+  </details>
 </section>
 
 <section id="weeklySummarySection" class="weekly-summary-section" hidden>

@@ -55,7 +55,7 @@ from relationship_ai import (
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 DB_PATH = DATA_DIR / "relationship.db"
-APP_VERSION = os.getenv("APP_VERSION", "4.1.1")
+APP_VERSION = os.getenv("APP_VERSION", "4.1.2")
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False

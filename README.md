@@ -1,6 +1,6 @@
 # 关系复盘｜盖洛普对话与长期复盘工具
 
-一个面向双人长期使用、可用 Docker 部署的关系记录网页。当前版本为 `4.1.1`，重点是把“长期记录结构”和“某一阶段的具体矛盾”分开：表单保存事实、感受、需要与回应，阶段目标可以采纳、暂停、完成或归档，不需要关系状态一变化就重新开发数据库。
+一个面向双人长期使用、可用 Docker 部署的关系记录网页。当前版本为 `4.1.2`，重点是把“长期记录结构”和“某一阶段的具体矛盾”分开：表单保存事实、感受、需要与回应，阶段目标可以采纳、暂停、完成或归档，不需要关系状态一变化就重新开发数据库。
 
 ## 页面与使用方式
 
@@ -122,7 +122,7 @@ docker compose up -d --force-recreate
 http://服务器IP:8080/api/health
 ```
 
-返回结果应包含 `"version":"4.1.1"`，且 `gallup_chat`、`period_reviews`、`participant_arrays`、`flexible_records`、`dynamic_actions`、`model_selector` 和 `calendar_journal` 都为 `true`。HTML 已禁用缓存，静态资源也带版本参数；如果健康检查仍不是 `4.1.1`，说明访问的仍是旧容器或旧反向代理目标。
+返回结果应包含 `"version":"4.1.2"`，且 `gallup_chat`、`period_reviews`、`participant_arrays`、`flexible_records`、`dynamic_actions`、`model_selector` 和 `calendar_journal` 都为 `true`。HTML 已禁用缓存，静态资源也带版本参数；如果健康检查仍不是 `4.1.2`，说明访问的仍是旧容器或旧反向代理目标。
 
 停止服务：
 

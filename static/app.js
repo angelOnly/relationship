@@ -4,10 +4,11 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const MODEL_STORAGE_KEY = "relationship-ai-model-v1";
 const CALENDAR_COLLAPSED_STORAGE_KEY = "relationship-journal-calendar-collapsed-v1";
 const PARTICIPANTS = [
-  { id: "xiaoli", name: "小娌", formId: "#xiaoliForm", stateId: "#xiaoliSaveState" },
-  { id: "xiaoyuan", name: "小元", formId: "#xiaoyuanForm", stateId: "#xiaoyuanSaveState" },
+  { id: "xiaoli", name: "小娌" },
+  { id: "xiaoyuan", name: "小元" },
 ];
 const PARTICIPANT_BY_ID = Object.fromEntries(PARTICIPANTS.map((item) => [item.id, item]));
+const ENTRY_FIELD_NAMES = ["appreciation", "event", "feeling", "need", "response", "repair_request", "follow_up"];
 const FOLLOW_UP_LABELS = {
   none: "只记录",
   communicate: "需要表达或倾听",
@@ -23,7 +24,9 @@ const state = {
   month: TODAY.slice(0, 7),
   date: TODAY,
   calendar: { days: {}, weeks: {} },
-  dayView: "xiaoli",
+  entryParticipantId: "xiaoli",
+  entryDrafts: {},
+  entryDirty: false,
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -82,9 +85,10 @@ function setCalendarCollapsed(collapsed, { persist = true } = {}) {
 }
 
 function setupDayWorkspace() {
-  $$('[data-day-view]').forEach((button) => {
-    button.addEventListener("click", () => activateDayView(button.dataset.dayView));
+  $$('[data-entry-participant]').forEach((button) => {
+    button.addEventListener("click", () => void selectEntryParticipant(button.dataset.entryParticipant));
   });
+  updateEntryParticipantUi();
 }
 
 function setupEntryStepTabs() {
@@ -108,27 +112,12 @@ function activateEntryStep(button) {
   });
 }
 
-function activateDayView(name) {
-  state.dayView = name;
-  $$('[data-day-view]').forEach((item) => {
-    const active = item.dataset.dayView === name;
-    item.classList.toggle("active", active);
-    item.setAttribute("aria-selected", String(active));
-  });
-  $$('[data-day-panel]').forEach((panel) => {
-    const active = panel.dataset.dayPanel === name;
-    panel.classList.toggle("active", active);
-    panel.hidden = !active;
-  });
-}
-
 function setupForms() {
-  PARTICIPANTS.forEach((participant) => {
-    $(participant.formId).addEventListener("submit", (event) => void saveEntry(event, participant.id));
-  });
-  $$('[data-delete]').forEach((button) => {
-    button.addEventListener("click", () => void deleteEntry(button.dataset.delete));
-  });
+  const form = $("#dailyEntryForm");
+  form.addEventListener("submit", (event) => void saveEntry(event));
+  form.addEventListener("input", markEntryDirty);
+  form.addEventListener("change", markEntryDirty);
+  $("#deleteDailyEntry").addEventListener("click", () => void deleteEntry());
 }
 
 function setupPeriodControls() {
@@ -157,6 +146,7 @@ function setupDataTools() {
 
 async function setMonth(month, preferredDate = "") {
   if (!isMonthKey(month)) return;
+  stashEntryDraft();
   state.month = month;
   state.date = preferredDate || (state.date.startsWith(month) ? state.date : defaultDateForMonth(month));
   $("#monthPicker").value = state.month;
@@ -250,6 +240,7 @@ function renderCalendar() {
 
 async function selectDate(entryDate, shouldScroll = false) {
   if (!isDateInMonth(entryDate, state.month)) return;
+  stashEntryDraft();
   state.date = entryDate;
   renderCalendar();
   if (shouldScroll && window.matchMedia("(max-width: 660px)").matches) {
@@ -263,15 +254,7 @@ async function selectDate(entryDate, shouldScroll = false) {
 
 async function loadDay() {
   updateSelectedDateHeading();
-  try {
-    const entries = await Promise.all(
-      PARTICIPANTS.map((participant) => fetchJson(`/api/entries/${state.date}/${participant.id}`)),
-    );
-    entries.forEach((entry) => fillForm(entry.participant.id, entry));
-  } catch (error) {
-    showToast(error.message || "当天记录读取失败");
-  }
-  await Promise.all([loadAiReview("daily", state.date, "#dailyAiReviewResult"), loadWeeklySummary()]);
+  await Promise.all([loadSelectedEntry(), loadAiReview("daily", state.date, "#dailyAiReviewResult"), loadWeeklySummary()]);
 }
 
 function updateSelectedDateHeading() {
@@ -284,32 +267,92 @@ function updateSelectedDateHeading() {
     : "分别写下双方所见，再让 AI 反馈可观察的互动。";
 }
 
-function fillForm(participantId, data) {
-  const participant = PARTICIPANT_BY_ID[participantId];
-  const form = $(participant.formId);
-  ["appreciation", "event", "feeling", "need", "response", "repair_request", "follow_up"].forEach((name) => {
+async function selectEntryParticipant(participantId) {
+  if (!PARTICIPANT_BY_ID[participantId] || participantId === state.entryParticipantId) return;
+  stashEntryDraft();
+  state.entryParticipantId = participantId;
+  updateEntryParticipantUi();
+  await loadSelectedEntry();
+}
+
+function updateEntryParticipantUi() {
+  const participant = PARTICIPANT_BY_ID[state.entryParticipantId];
+  if (!participant) return;
+  const form = $("#dailyEntryForm");
+  form.dataset.participantId = participant.id;
+  $("#entryParticipantTag").textContent = participant.name;
+  $("#entryFormHeading").textContent = `${participant.name}的当日记录`;
+  $("#saveDailyEntry").textContent = `保存${participant.name}的记录`;
+  $("#deleteDailyEntry").textContent = `清空${participant.name}的记录`;
+  $$('[data-entry-participant]').forEach((button) => {
+    const active = button.dataset.entryParticipant === participant.id;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function entryDraftKey(entryDate = state.date, participantId = state.entryParticipantId) {
+  return `${entryDate}:${participantId}`;
+}
+
+function readEntryFormData() {
+  const form = $("#dailyEntryForm");
+  return Object.fromEntries(ENTRY_FIELD_NAMES.map((name) => [name, form.elements[name].value]));
+}
+
+function stashEntryDraft() {
+  if (!state.entryDirty) return;
+  state.entryDrafts[entryDraftKey()] = readEntryFormData();
+}
+
+function fillDailyEntryForm(data, { draft = false } = {}) {
+  const form = $("#dailyEntryForm");
+  ENTRY_FIELD_NAMES.forEach((name) => {
     form.elements[name].value = data[name] ?? (name === "follow_up" ? "none" : "");
   });
-  setSaveState(
-    participantId,
-    data.updated_at ? `已保存 ${formatTime(data.updated_at)} · 修订 ${Number(data.revision || 1)}` : "未保存",
-    Boolean(data.updated_at),
+  state.entryDirty = draft;
+  setDailyEntrySaveState(
+    draft
+      ? "未保存草稿"
+      : data.updated_at ? `已保存 ${formatTime(data.updated_at)} · 修订 ${Number(data.revision || 1)}` : "未保存",
+    !draft && Boolean(data.updated_at),
   );
 }
 
-async function saveEntry(event, participantId) {
+async function loadSelectedEntry() {
+  const entryDate = state.date;
+  const participantId = state.entryParticipantId;
+  const draftKey = entryDraftKey(entryDate, participantId);
+  const draft = state.entryDrafts[draftKey];
+  if (draft) {
+    fillDailyEntryForm(draft, { draft: true });
+    return;
+  }
+
+  fillDailyEntryForm({});
+  try {
+    const entry = await fetchJson(`/api/entries/${entryDate}/${participantId}`);
+    if (state.date !== entryDate || state.entryParticipantId !== participantId || state.entryDirty || state.entryDrafts[draftKey]) return;
+    fillDailyEntryForm(entry);
+  } catch (error) {
+    showToast(error.message || "当天记录读取失败");
+  }
+}
+
+function markEntryDirty() {
+  if (state.entryDirty) return;
+  state.entryDirty = true;
+  setDailyEntrySaveState("未保存修改", false);
+}
+
+async function saveEntry(event) {
   event.preventDefault();
-  const form = event.currentTarget;
+  const participantId = state.entryParticipantId;
+  const entryDate = state.date;
   const payload = {
-    entry_date: state.date,
+    entry_date: entryDate,
     participant_id: participantId,
-    appreciation: form.elements.appreciation.value,
-    event: form.elements.event.value,
-    feeling: form.elements.feeling.value,
-    need: form.elements.need.value,
-    response: form.elements.response.value,
-    repair_request: form.elements.repair_request.value,
-    follow_up: form.elements.follow_up.value,
+    ...readEntryFormData(),
   };
   try {
     const saved = await fetchJson("/api/entries", {
@@ -317,7 +360,11 @@ async function saveEntry(event, participantId) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    setSaveState(participantId, `已保存 ${formatTime(saved.updated_at)} · 修订 ${saved.revision}`, true);
+    delete state.entryDrafts[entryDraftKey(entryDate, participantId)];
+    if (state.date === entryDate && state.entryParticipantId === participantId) {
+      state.entryDirty = false;
+      setDailyEntrySaveState(`已保存 ${formatTime(saved.updated_at)} · 修订 ${saved.revision}`, true);
+    }
     await refreshMonth({ reloadDay: false });
     showToast(`${PARTICIPANT_BY_ID[participantId].name}的记录已保存`);
   } catch (error) {
@@ -325,12 +372,18 @@ async function saveEntry(event, participantId) {
   }
 }
 
-async function deleteEntry(participantId) {
+async function deleteEntry() {
+  const participantId = state.entryParticipantId;
+  const entryDate = state.date;
   const name = PARTICIPANT_BY_ID[participantId].name;
-  if (!confirm(`确定清空 ${state.date} ${name}的记录吗？历史修订仍会保留在备份中。`)) return;
+  if (!confirm(`确定清空 ${entryDate} ${name}的记录吗？历史修订仍会保留在备份中。`)) return;
   try {
-    await fetchJson(`/api/entries/${state.date}/${participantId}`, { method: "DELETE" });
-    fillForm(participantId, await fetchJson(`/api/entries/${state.date}/${participantId}`));
+    await fetchJson(`/api/entries/${entryDate}/${participantId}`, { method: "DELETE" });
+    delete state.entryDrafts[entryDraftKey(entryDate, participantId)];
+    const emptyEntry = await fetchJson(`/api/entries/${entryDate}/${participantId}`);
+    if (state.date === entryDate && state.entryParticipantId === participantId) {
+      fillDailyEntryForm(emptyEntry);
+    }
     await refreshMonth({ reloadDay: false });
     showToast("已清空这一天的记录");
   } catch (error) {
@@ -530,8 +583,8 @@ function renderAiReview(review, target) {
   `;
 }
 
-function setSaveState(participantId, text, saved) {
-  const el = $(PARTICIPANT_BY_ID[participantId].stateId);
+function setDailyEntrySaveState(text, saved) {
+  const el = $("#dailyEntrySaveState");
   el.textContent = text;
   el.classList.toggle("saved", saved);
 }
