@@ -266,23 +266,43 @@ class ChatApiTestCase(unittest.TestCase):
         self.assertEqual(json.loads(document["metadata_json"])["participant"]["name"], "小娌")
         self.assertEqual(revision_count, 2)
 
-    def test_weekly_json_has_role_neutral_field_names(self) -> None:
-        response = self.client.post(
+    def test_weekly_summary_uses_a_real_sunday_key_and_calendar_status(self) -> None:
+        saved = self.client.post(
             "/api/weeks",
             json={
-                "month_key": "2026-07",
-                "week_no": 2,
+                "week_end": "2026-07-19",
                 "observed_adjustment": "双方都能在暂停后回来",
                 "participant_signals": "小娌表达更具体，小元按时回应",
             },
         )
-        self.assertEqual(response.status_code, 200)
-        body = response.get_json()
+        self.assertEqual(saved.status_code, 200)
+        body = saved.get_json()
+        self.assertEqual(body["week_end"], "2026-07-19")
+        self.assertEqual(body["week_start"], "2026-07-13")
         self.assertIn("observed_adjustment", body)
         self.assertIn("participant_signals", body)
+        self.assertNotIn("week_no", body)
         self.assertNotIn("my_learning", body)
         self.assertNotIn("partner_signal", body)
 
+        invalid = self.client.post("/api/weeks", json={"week_end": "2026-07-18"})
+        self.assertEqual(invalid.status_code, 400)
+
+        entry = self.client.post(
+            "/api/entries",
+            json={
+                "entry_date": "2026-07-16",
+                "participant_id": "xiaoli",
+                "event": "一起确认周末安排",
+                "follow_up": "coordinate",
+            },
+        )
+        self.assertEqual(entry.status_code, 200)
+        calendar = self.client.get("/api/calendar?month=2026-07")
+        self.assertEqual(calendar.status_code, 200)
+        payload = calendar.get_json()
+        self.assertIn("2026-07-19", payload["weeks"])
+        self.assertEqual(payload["days"]["2026-07-16"]["participants"], ["xiaoli"])
     def test_action_goals_use_names_and_have_a_lifecycle(self) -> None:
         baseline = self.client.get("/api/action-items").get_json()
         self.assertTrue(all(item["owner"] == "共同" for item in baseline if item["source"] == "baseline"))
@@ -321,7 +341,7 @@ class ChatApiTestCase(unittest.TestCase):
         self.assertEqual(backup_response.status_code, 200)
         self.assertTrue(csv_response.data.startswith(b"\xef\xbb\xbf"))
         self.assertIn("filename*=UTF-8''", csv_response.headers["Content-Disposition"])
-        self.assertEqual(backup["version"], 4)
+        self.assertEqual(backup["version"], 5)
         self.assertEqual(backup["participants"][0]["name"], "小娌")
         self.assertIn("scene_analyses", backup)
         self.assertIn("period_reviews", backup)

@@ -3,19 +3,19 @@
 {% macro daily_form(form_id, participant_id, participant_name, state_id) %}
 <form class="panel entry-form {{ participant_id }}-panel" id="{{ form_id }}" data-participant-id="{{ participant_id }}">
   <div class="panel-heading sticky-heading">
-    <div><span class="person-tag">{{ participant_name }}</span><h2>{{ participant_name }}的记录</h2></div>
+    <div><span class="person-tag">{{ participant_name }}</span><h2>{{ participant_name }}的当日记录</h2></div>
     <span class="save-state" id="{{ state_id }}">未保存</span>
   </div>
-  <p class="schema-note"><b>通用格式 v1</b> · 不要求每天发生冲突，也不要求自己打分。</p>
+  <p class="schema-note"><b>只记录这一天</b> · 写事实、感受、需要和下一步；不要求每天有冲突，也不要求自己打分。</p>
   <nav class="section-tabs entry-step-tabs" aria-label="{{ participant_name }}记录步骤" role="tablist">
-    <button class="section-tab active" type="button" data-entry-view="context" role="tab" aria-selected="true">事件与感受</button>
-    <button class="section-tab" type="button" data-entry-view="response" role="tab" aria-selected="false">沟通与跟进</button>
+    <button class="section-tab active" type="button" data-entry-view="context" role="tab" aria-selected="true">观察与感受</button>
+    <button class="section-tab" type="button" data-entry-view="response" role="tab" aria-selected="false">沟通与下一步</button>
   </nav>
   <div class="universal-fields entry-step-panel" data-entry-panel="context">
     <label>1. 值得肯定的一件具体事
       <textarea name="appreciation" rows="3" placeholder="可以是小娌、小元或这段关系中值得保留的一件小事"></textarea>
     </label>
-    <label>2. 今天最值得记录的一件具体事
+    <label>2. 这一天最值得记录的一件具体事
       <textarea name="event" rows="3" placeholder="只写可观察的事实；平静、靠近、分歧或未解决都可以"></textarea>
     </label>
     <label>3. 当时的感受
@@ -44,132 +44,116 @@
     </label>
   </div>
   <div class="form-actions">
-    <button type="button" class="button danger ghost" data-delete="{{ participant_id }}">清空当天</button>
+    <button type="button" class="button danger ghost" data-delete="{{ participant_id }}">清空这一天</button>
     <button type="submit" class="button primary">保存{{ participant_name }}的记录</button>
   </div>
 </form>
 {% endmacro %}
 
-{% block title %}每日记录 · 关系复盘{% endblock %}
+{% block title %}关系日历 · 关系复盘{% endblock %}
 {% block content %}
-<section class="hero journal-hero">
+<section class="hero calendar-hero">
   <div>
-    <span class="eyebrow">长期记录 · 不绑定某一阶段</span>
-    <h1>先写下来，再沟通</h1>
-    <p>每天只记录事实、感受、需要、双方回应与下一步；行为评分交给 AI。表单保持通用，阶段目标可以随关系变化而替换。</p>
+    <span class="eyebrow">关系日历</span>
+    <h1>把一天写清楚</h1>
+    <p>默认打开今天；点选任意日期即可补记。日记、AI 当日反馈和周日小结都从同一张日历进入。</p>
   </div>
-  <details class="month-controller panel" id="monthController" open>
-    <summary>当前周期 <span id="monthSummaryLabel">{{ today[:7] }}</span></summary>
-    <div class="month-controller-body">
-      <label for="monthPicker">当前周期</label>
-      <div class="month-row">
-        <button class="icon-button" id="prevMonth" title="上个月">‹</button>
-        <input id="monthPicker" type="month">
-        <button class="icon-button" id="nextMonth" title="下个月">›</button>
-      </div>
-      <div class="month-actions">
-        <button class="button subtle" id="exportCsv">导出本月 CSV</button>
-        <button class="button subtle" id="backupJson">备份全部数据</button>
-      </div>
-    </div>
-  </details>
-</section>
-
-<details class="journal-utilities" id="journalUtilities" open>
-  <summary>日期、查询、导出与 AI 设置</summary>
-  <section class="toolbar panel">
-    <div class="toolbar-group">
-      <label for="datePicker">记录日期</label>
-      <input id="datePicker" type="date" value="{{ today }}">
-    </div>
-    <div class="toolbar-group search-group">
-      <label for="searchInput">查询历史记录</label>
-      <input id="searchInput" type="search" placeholder="搜索事实、感受、需要或请求">
-    </div>
-    <div class="toolbar-group">
-      <label for="filterFollowUp">跟进状态</label>
-      <select id="filterFollowUp">
-        <option value="">全部记录</option>
-        <option value="none">只记录</option>
-        <option value="communicate">需要表达或倾听</option>
-        <option value="coordinate">需要共同协商</option>
-        <option value="repair">需要修复连接</option>
-        <option value="pause">先暂停再谈</option>
-        <option value="resolved">已经处理</option>
-      </select>
-    </div>
-    <button class="button primary" id="loadDate">打开当天记录</button>
-  </section>
-
-  <section class="panel ai-control-bar" aria-label="AI 功能入口">
-    <div class="ai-control-copy">
-      <span class="feature-pill">AI 已接入</span>
-      <div><strong>盖洛普评分与复盘</strong><small>日、周、月都使用同一份长期画像与历史精炼记录</small></div>
-    </div>
-    <label class="model-picker" for="reviewModel">
-      <span>本次模型</span>
-      <select id="reviewModel"><option value="">正在加载模型…</option></select>
-      <small id="reviewModelHint">模型只在服务端调用</small>
+  <div class="calendar-controls" aria-label="日历控制">
+    <button class="icon-button" id="prevMonth" type="button" title="上个月" aria-label="上个月">‹</button>
+    <label class="month-picker-control">
+      <span class="sr-only">选择月份</span>
+      <input id="monthPicker" type="month" aria-label="选择月份">
     </label>
-    <a class="button primary" href="/chat">打开盖洛普对话</a>
-  </section>
-</details>
-
-<section class="tabs" aria-label="记录模块">
-  <button class="tab active" data-tab="daily">每日记录</button>
-  <button class="tab" data-tab="history">本月历史</button>
-  <button class="tab" data-tab="weekly">每周小结</button>
-  <button class="tab" data-tab="monthly">月度复盘</button>
+    <button class="icon-button" id="nextMonth" type="button" title="下个月" aria-label="下个月">›</button>
+    <button class="button subtle" id="goToday" type="button">回到今天</button>
+    <button class="button primary" id="openMonthlySummary" type="button">本月复盘</button>
+  </div>
 </section>
 
-<section id="daily" class="tab-panel active">
-  <nav class="section-tabs daily-section-tabs" aria-label="今日记录分区" role="tablist">
-    <button class="section-tab active" type="button" data-daily-view="xiaoli" role="tab" aria-selected="true">小娌记录</button>
-    <button class="section-tab" type="button" data-daily-view="xiaoyuan" role="tab" aria-selected="false">小元记录</button>
-    <button class="section-tab" type="button" data-daily-view="review" role="tab" aria-selected="false">AI 今日反馈</button>
+<section class="panel calendar-panel" aria-label="每月记录日历">
+  <div class="calendar-panel-heading">
+    <div>
+      <span class="eyebrow" id="calendarMonthLabel">{{ today[:7] }}</span>
+      <p id="calendarStatus" class="calendar-status">选择一天，开始记录或补记。</p>
+    </div>
+    <div class="calendar-legend" aria-label="记录状态说明">
+      <span><i class="calendar-dot xiaoli-dot"></i>小娌</span>
+      <span><i class="calendar-dot xiaoyuan-dot"></i>小元</span>
+      <span><i class="calendar-dot review-dot"></i>AI</span>
+    </div>
+  </div>
+  <div class="calendar-weekdays" aria-hidden="true">
+    <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+  </div>
+  <div class="calendar-grid" id="calendarGrid" aria-live="polite"></div>
+</section>
+
+<section class="selected-day-workspace" id="dayWorkspace" tabindex="-1">
+  <div class="workspace-heading">
+    <div>
+      <span class="eyebrow" id="selectedDateLabel">今天</span>
+      <h2 id="selectedDateHeading">当日记录</h2>
+      <p id="selectedDateHint" class="muted">分别写下双方所见，再让 AI 反馈可观察的互动。</p>
+    </div>
+  </div>
+  <nav class="section-tabs workspace-tabs" aria-label="当日工作区" role="tablist">
+    <button class="section-tab active" type="button" data-day-view="xiaoli" role="tab" aria-selected="true">小娌记录</button>
+    <button class="section-tab" type="button" data-day-view="xiaoyuan" role="tab" aria-selected="false">小元记录</button>
+    <button class="section-tab" type="button" data-day-view="review" role="tab" aria-selected="false">AI 反馈</button>
   </nav>
-  <div class="compact-tab-panel active" data-daily-panel="xiaoli">
+  <div class="day-content-panel" data-day-panel="xiaoli">
     {{ daily_form('xiaoliForm', 'xiaoli', '小娌', 'xiaoliSaveState') }}
   </div>
-  <div class="compact-tab-panel" data-daily-panel="xiaoyuan" hidden>
+  <div class="day-content-panel" data-day-panel="xiaoyuan" hidden>
     {{ daily_form('xiaoyuanForm', 'xiaoyuan', '小元', 'xiaoyuanSaveState') }}
   </div>
-  <div class="compact-tab-panel" data-daily-panel="review" hidden>
+  <div class="day-content-panel" data-day-panel="review" hidden>
     <section class="panel ai-review-panel daily-ai-review">
       <div class="panel-heading compact-heading">
-        <div><span class="eyebrow">保存至少一份记录后生成</span><h2>今日 AI 评分与反馈</h2></div>
-        <button type="button" class="button primary" id="dailyAiReview">分析今天</button>
+        <div><span class="eyebrow">保存至少一份记录后生成</span><h2>当日 AI 评分与反馈</h2></div>
+        <button type="button" class="button primary" id="dailyAiReview">分析这一天</button>
       </div>
-      <p class="ai-review-hint">AI 分别评价小娌与小元当天的可观察行为；双方都填写时判断更完整。评分不写回人格标签，只留下证据、反馈和明天一个目标。</p>
-      <div id="dailyAiReviewResult" class="ai-review-result empty-state">还没有生成今日复盘</div>
+      <p class="ai-review-hint">AI 分别评价小娌与小元当天的可观察行为，并给出下一步的唯一重点。模型选择沿用“盖洛普 AI 对话”页的设置。</p>
+      <div id="dailyAiReviewResult" class="ai-review-result empty-state">还没有生成当日复盘</div>
     </section>
   </div>
 </section>
 
-<section id="history" class="tab-panel">
-  <div class="panel">
-    <div class="panel-heading">
-      <div><span class="eyebrow">跨版本可追溯</span><h2 id="historyTitle">本月历史</h2></div>
-      <span class="muted" id="historyCount">0 条</span>
-    </div>
-    <div id="historyList" class="history-list empty-state">还没有记录。</div>
-  </div>
+<section id="weeklySummarySection" class="weekly-summary-section" hidden>
+  <details class="panel period-disclosure" id="weeklySummaryDisclosure">
+    <summary>
+      <span>
+        <i class="period-kicker">周日</i>
+        <strong>本周小结</strong>
+        <small id="weekRange">选择周日后记录这一周。</small>
+      </span>
+      <span class="save-state" id="weeklySaveState">未保存</span>
+    </summary>
+    <form class="week-form" id="weeklyForm" data-week-end="">
+      <p class="schema-note"><b>一次看一周</b> · 只看重复模式、有效调整和下周一个重点，不把某一天定义为整段关系。</p>
+      <div class="week-fields">
+        <label>本周值得保留的时刻<textarea name="highlights" rows="3"></textarea></label>
+        <label>重复出现的互动模式<textarea name="recurring_pattern" rows="3"></textarea></label>
+        <label>本周出现的觉察或调整<textarea name="observed_adjustment" rows="3"></textarea></label>
+        <label>看见小娌与小元各自的努力或需要<textarea name="participant_signals" rows="3"></textarea></label>
+        <label>下周唯一关注点<textarea name="next_focus" rows="3" placeholder="只写一个重点"></textarea></label>
+      </div>
+      <div class="form-actions">
+        <button class="button subtle" type="button" id="weeklyAiReview">生成本周 AI 反馈</button>
+        <button class="button primary" type="submit">保存本周小结</button>
+      </div>
+      <div id="weeklyAiReviewResult" class="ai-review-result empty-state">还没有生成本周复盘</div>
+    </form>
+  </details>
 </section>
 
-<section id="weekly" class="tab-panel">
-  <div class="panel review-intro-panel">
-    <span class="eyebrow">每周看模式，不写判决书</span>
-    <p>记录值得保留的时刻、重复模式与双方信号，再让 AI 比较本周日记和历史，只给下周一个重点。</p>
+<section id="monthlySummarySection" class="period-workspace panel" hidden tabindex="-1">
+  <div class="panel-heading">
+    <div><span class="eyebrow" id="monthlyPeriodLabel">本月</span><h2>月度复盘</h2></div>
+    <button class="button subtle" type="button" id="closeMonthlySummary">收起</button>
   </div>
-  <div class="weekly-grid" id="weeklyGrid"></div>
-</section>
-
-<section id="monthly" class="tab-panel">
-  <form class="panel monthly-form" id="monthlyForm">
-    <div class="panel-heading">
-      <div><span class="eyebrow">月底比较长期趋势</span><h2>月度复盘</h2></div>
-      <span class="save-state" id="monthlySaveState">未保存</span>
-    </div>
+  <form class="monthly-form" id="monthlyForm">
+    <p class="schema-note"><b>月底看趋势</b> · 关系变化后仍能沿用这套问题，只替换下一个月的唯一重点。</p>
     <div class="monthly-grid">
       <label>这个月关系整体有什么变化<textarea name="overall_change" rows="5"></textarea></label>
       <label>哪些做法确实有帮助<textarea name="what_helped" rows="5"></textarea></label>
@@ -184,6 +168,14 @@
     <div id="monthlyAiReviewResult" class="ai-review-result empty-state">还没有生成月度复盘</div>
   </form>
 </section>
+
+<details class="panel journal-data-tools">
+  <summary>导出与备份</summary>
+  <div class="month-actions">
+    <button class="button subtle" id="exportCsv" type="button">导出当前月 CSV</button>
+    <button class="button subtle" id="backupJson" type="button">备份全部数据</button>
+  </div>
+</details>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 {% endblock %}

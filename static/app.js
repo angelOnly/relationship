@@ -15,34 +15,45 @@ const FOLLOW_UP_LABELS = {
   pause: "先暂停再谈",
   resolved: "已经处理",
 };
+const WEEKDAY_NAMES = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
+const TODAY = localDateString(new Date());
 
 const state = {
-  month: currentMonth(),
-  date: localDateString(new Date()),
-  history: [],
+  month: TODAY.slice(0, 7),
+  date: TODAY,
+  calendar: { days: {}, weeks: {} },
+  dayView: "xiaoli",
 };
 
 document.addEventListener("DOMContentLoaded", () => {
-  setupTabs();
-  setupDailyTabs();
+  setupCalendarControls();
+  setupDayWorkspace();
   setupEntryStepTabs();
-  setupMobileDisclosures();
-  setupDateAndMonth();
   setupForms();
-  setupToolbar();
-  setupModelPicker();
-  loadAll();
+  setupPeriodControls();
+  setupDataTools();
+  void refreshMonth();
 });
 
-function setupTabs() {
-  $$(".tab").forEach((tab) => {
-    tab.addEventListener("click", () => activateTab(tab.dataset.tab));
+function setupCalendarControls() {
+  const monthPicker = $("#monthPicker");
+  monthPicker.value = state.month;
+  monthPicker.addEventListener("change", () => {
+    const month = monthPicker.value;
+    if (isMonthKey(month)) void setMonth(month);
+  });
+  $("#prevMonth").addEventListener("click", () => void shiftMonth(-1));
+  $("#nextMonth").addEventListener("click", () => void shiftMonth(1));
+  $("#goToday").addEventListener("click", () => void setMonth(TODAY.slice(0, 7), TODAY));
+  $("#openMonthlySummary").addEventListener("click", () => void openMonthlySummary());
+  $("#closeMonthlySummary").addEventListener("click", () => {
+    $("#monthlySummarySection").hidden = true;
   });
 }
 
-function setupDailyTabs() {
-  $$('[data-daily-view]').forEach((button) => {
-    button.addEventListener("click", () => activateDailyView(button.dataset.dailyView));
+function setupDayWorkspace() {
+  $$('[data-day-view]').forEach((button) => {
+    button.addEventListener("click", () => activateDayView(button.dataset.dayView));
   });
 }
 
@@ -67,106 +78,45 @@ function activateEntryStep(button) {
   });
 }
 
-function setupMobileDisclosures() {
-  if (!window.matchMedia("(max-width: 660px)").matches) return;
-  ["#monthController", "#journalUtilities"].forEach((selector) => {
-    const disclosure = $(selector);
-    if (disclosure) disclosure.open = false;
-  });
-}
-
-function activateDailyView(name) {
-  $$('[data-daily-view]').forEach((item) => {
-    const active = item.dataset.dailyView === name;
+function activateDayView(name) {
+  state.dayView = name;
+  $$('[data-day-view]').forEach((item) => {
+    const active = item.dataset.dayView === name;
     item.classList.toggle("active", active);
     item.setAttribute("aria-selected", String(active));
   });
-  $$('[data-daily-panel]').forEach((panel) => {
-    const active = panel.dataset.dailyPanel === name;
+  $$('[data-day-panel]').forEach((panel) => {
+    const active = panel.dataset.dayPanel === name;
     panel.classList.toggle("active", active);
     panel.hidden = !active;
   });
 }
 
-function activateTab(name) {
-  $$(".tab").forEach((item) => item.classList.toggle("active", item.dataset.tab === name));
-  $$(".tab-panel").forEach((item) => item.classList.toggle("active", item.id === name));
-  if (name === "history") loadHistory();
-  if (name === "weekly") loadWeeks();
-  if (name === "monthly") loadMonthlySummary();
-}
-
-function setupDateAndMonth() {
-  const monthPicker = $("#monthPicker");
-  const datePicker = $("#datePicker");
-  monthPicker.value = state.month;
-  datePicker.value = state.date;
-  updateMonthSummary();
-
-  monthPicker.addEventListener("change", () => {
-    state.month = monthPicker.value || currentMonth();
-    updateMonthSummary();
-    if (!datePicker.value.startsWith(state.month)) {
-      const today = localDateString(new Date());
-      datePicker.value = today.startsWith(state.month) ? today : `${state.month}-01`;
-      state.date = datePicker.value;
-    }
-    loadHistory();
-    loadWeeks();
-    loadMonthlySummary();
-  });
-
-  datePicker.addEventListener("change", () => {
-    state.date = datePicker.value;
-    if (state.date) {
-      state.month = state.date.slice(0, 7);
-      monthPicker.value = state.month;
-      updateMonthSummary();
-    }
-  });
-
-  $("#prevMonth").addEventListener("click", () => shiftMonth(-1));
-  $("#nextMonth").addEventListener("click", () => shiftMonth(1));
-}
-
-function shiftMonth(delta) {
-  const [year, month] = state.month.split("-").map(Number);
-  const d = new Date(year, month - 1 + delta, 1);
-  state.month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  $("#monthPicker").value = state.month;
-  updateMonthSummary();
-  const today = localDateString(new Date());
-  state.date = today.startsWith(state.month) ? today : `${state.month}-01`;
-  $("#datePicker").value = state.date;
-  loadHistory();
-  loadWeeks();
-  loadMonthlySummary();
-}
-
 function setupForms() {
   PARTICIPANTS.forEach((participant) => {
-    $(participant.formId).addEventListener("submit", (event) => saveEntry(event, participant.id));
+    $(participant.formId).addEventListener("submit", (event) => void saveEntry(event, participant.id));
   });
   $$('[data-delete]').forEach((button) => {
-    button.addEventListener("click", () => deleteEntry(button.dataset.delete));
-  });
-  $("#monthlyForm").addEventListener("submit", saveMonthlySummary);
-  $("#dailyAiReview").addEventListener("click", () => {
-    generateAiReview("daily", state.date, "#dailyAiReviewResult", $("#dailyAiReview"));
-  });
-  $("#monthlyAiReview").addEventListener("click", () => {
-    generateAiReview("monthly", state.month, "#monthlyAiReviewResult", $("#monthlyAiReview"));
+    button.addEventListener("click", () => void deleteEntry(button.dataset.delete));
   });
 }
 
-function setupToolbar() {
-  $("#loadDate").addEventListener("click", loadDay);
-  let timer;
-  $("#searchInput").addEventListener("input", () => {
-    clearTimeout(timer);
-    timer = setTimeout(loadHistory, 250);
+function setupPeriodControls() {
+  $("#weeklyForm").addEventListener("submit", (event) => void saveWeek(event));
+  $("#weeklyAiReview").addEventListener("click", () => {
+    const weekEnd = $("#weeklyForm").dataset.weekEnd;
+    if (weekEnd) void generateAiReview("weekly", weekEnd, "#weeklyAiReviewResult", $("#weeklyAiReview"));
   });
-  $("#filterFollowUp").addEventListener("change", loadHistory);
+  $("#monthlyForm").addEventListener("submit", (event) => void saveMonthlySummary(event));
+  $("#monthlyAiReview").addEventListener("click", () => {
+    void generateAiReview("monthly", state.month, "#monthlyAiReviewResult", $("#monthlyAiReview"));
+  });
+  $("#dailyAiReview").addEventListener("click", () => {
+    void generateAiReview("daily", state.date, "#dailyAiReviewResult", $("#dailyAiReview"));
+  });
+}
+
+function setupDataTools() {
   $("#exportCsv").addEventListener("click", () => {
     window.location.href = `/api/export.csv?month=${encodeURIComponent(state.month)}`;
   });
@@ -175,59 +125,130 @@ function setupToolbar() {
   });
 }
 
-async function setupModelPicker() {
-  const select = $("#reviewModel");
-  const hint = $("#reviewModelHint");
+async function setMonth(month, preferredDate = "") {
+  if (!isMonthKey(month)) return;
+  state.month = month;
+  state.date = preferredDate || (state.date.startsWith(month) ? state.date : defaultDateForMonth(month));
+  $("#monthPicker").value = state.month;
+  await refreshMonth();
+}
+
+async function shiftMonth(delta) {
+  const [year, month] = state.month.split("-").map(Number);
+  const shifted = new Date(year, month - 1 + delta, 1, 12);
+  const target = `${shifted.getFullYear()}-${String(shifted.getMonth() + 1).padStart(2, "0")}`;
+  await setMonth(target, defaultDateForMonth(target));
+}
+
+function defaultDateForMonth(month) {
+  if (month === TODAY.slice(0, 7)) return TODAY;
+  const selectedDay = Number(state.date.slice(8, 10)) || 1;
+  const day = Math.min(selectedDay, daysInMonth(month));
+  return `${month}-${String(day).padStart(2, "0")}`;
+}
+
+async function refreshMonth({ reloadDay = true } = {}) {
+  updateCalendarLabels();
   try {
-    const catalog = await fetchJson("/api/models");
-    select.innerHTML = catalog.models.map((item) => (
-      `<option value="${escapeHtml(item.key)}">${escapeHtml(item.label)} · ${escapeHtml(item.description || "")}</option>`
-    )).join("");
-    const stored = localStorage.getItem(MODEL_STORAGE_KEY);
-    select.value = catalog.models.some((item) => item.key === stored) ? stored : catalog.default;
-    updateModelHint(catalog, select.value, hint);
-    select.addEventListener("change", () => {
-      localStorage.setItem(MODEL_STORAGE_KEY, select.value);
-      updateModelHint(catalog, select.value, hint);
-    });
-    if (!catalog.configured) hint.textContent = "服务端尚未完成模型密钥配置";
+    state.calendar = await fetchJson(`/api/calendar?month=${encodeURIComponent(state.month)}`);
   } catch (error) {
-    select.innerHTML = '<option value="">使用服务端默认模型</option>';
-    hint.textContent = error.message || "模型列表读取失败";
+    state.calendar = { month: state.month, days: {}, weeks: {} };
+    showToast(error.message || "日历状态读取失败");
+  }
+  renderCalendar();
+  if (reloadDay) await loadDay();
+  if (!$("#monthlySummarySection").hidden) await loadMonthlySummary();
+}
+
+function updateCalendarLabels() {
+  $("#calendarMonthLabel").textContent = formatMonth(state.month);
+  $("#calendarStatus").textContent = `${formatMonth(state.month)} · 点选任意日期记录，周日可写本周小结。`;
+}
+
+function renderCalendar() {
+  const grid = $("#calendarGrid");
+  const [year, month] = state.month.split("-").map(Number);
+  const firstWeekday = new Date(year, month - 1, 1, 12).getDay();
+  const totalDays = daysInMonth(state.month);
+  const cells = [];
+
+  for (let blank = 0; blank < firstWeekday; blank += 1) {
+    cells.push('<div class="calendar-day-slot calendar-day-empty" aria-hidden="true"></div>');
+  }
+  for (let day = 1; day <= totalDays; day += 1) {
+    const entryDate = `${state.month}-${String(day).padStart(2, "0")}`;
+    const info = state.calendar.days?.[entryDate] || {};
+    const participantIds = Array.isArray(info.participants) ? info.participants : [];
+    const hasDailyReview = Boolean(info.daily_review);
+    const hasWeeklySummary = Boolean(state.calendar.weeks?.[entryDate]);
+    const weekday = new Date(year, month - 1, day, 12).getDay();
+    const statuses = [];
+    if (participantIds.includes("xiaoli")) statuses.push("小娌已记录");
+    if (participantIds.includes("xiaoyuan")) statuses.push("小元已记录");
+    if (hasDailyReview) statuses.push("AI 当日反馈已生成");
+    if (hasWeeklySummary) statuses.push("本周小结已保存");
+    const dots = [
+      participantIds.includes("xiaoli") ? '<i class="calendar-day-dot xiaoli-dot"></i>' : "",
+      participantIds.includes("xiaoyuan") ? '<i class="calendar-day-dot xiaoyuan-dot"></i>' : "",
+      hasDailyReview ? '<i class="calendar-day-dot review-dot"></i>' : "",
+    ].join("");
+    const classes = [
+      "calendar-day",
+      entryDate === state.date ? "selected" : "",
+      entryDate === TODAY ? "today" : "",
+      hasWeeklySummary ? "has-weekly-summary" : "",
+    ].filter(Boolean).join(" ");
+    const weekLabel = weekday === 0
+      ? `<span class="calendar-week-label">${hasWeeklySummary ? "已小结" : "周小结"}</span>`
+      : "";
+    const ariaStatus = statuses.length ? `，${statuses.join("，")}` : "，尚未记录";
+    cells.push(`
+      <div class="calendar-day-slot">
+        <button class="${classes}" type="button" data-calendar-date="${entryDate}" aria-label="${formatDateTitle(entryDate)}${ariaStatus}">
+          <span class="calendar-day-number">${day}</span>
+          <span class="calendar-day-dots" aria-hidden="true">${dots}</span>
+          ${weekLabel}
+        </button>
+      </div>
+    `);
+  }
+  grid.innerHTML = cells.join("");
+  $$('[data-calendar-date]', grid).forEach((button) => {
+    button.addEventListener("click", () => void selectDate(button.dataset.calendarDate, true));
+  });
+}
+
+async function selectDate(entryDate, shouldScroll = false) {
+  if (!isDateInMonth(entryDate, state.month)) return;
+  state.date = entryDate;
+  renderCalendar();
+  await loadDay();
+  if (shouldScroll) {
+    $("#dayWorkspace").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 }
 
-function updateModelHint(catalog, key, target) {
-  const item = catalog.models.find((model) => model.key === key);
-  if (!item) return;
-  target.textContent = item.key === item.model ? `模型标识：${item.model}` : `接口实际调用：${item.model}`;
-}
-
-async function loadAll() {
-  await loadDay();
-  await Promise.all([loadHistory(), loadWeeks(), loadMonthlySummary()]);
-}
-
 async function loadDay() {
-  state.date = $("#datePicker").value || localDateString(new Date());
-  state.month = state.date.slice(0, 7);
-  $("#monthPicker").value = state.month;
-  updateMonthSummary();
+  updateSelectedDateHeading();
   try {
     const entries = await Promise.all(
       PARTICIPANTS.map((participant) => fetchJson(`/api/entries/${state.date}/${participant.id}`)),
     );
     entries.forEach((entry) => fillForm(entry.participant.id, entry));
-    await loadAiReview("daily", state.date, "#dailyAiReviewResult");
-    showToast(`已打开 ${state.date} 的记录`);
   } catch (error) {
     showToast(error.message || "当天记录读取失败");
   }
+  await Promise.all([loadAiReview("daily", state.date, "#dailyAiReviewResult"), loadWeeklySummary()]);
 }
 
-function updateMonthSummary() {
-  const label = $("#monthSummaryLabel");
-  if (label) label.textContent = state.month;
+function updateSelectedDateHeading() {
+  const title = formatDateTitle(state.date);
+  const isToday = state.date === TODAY;
+  $("#selectedDateLabel").textContent = isToday ? `今天 · ${title}` : title;
+  $("#selectedDateHeading").textContent = isToday ? "今天的记录" : "这一天的记录";
+  $("#selectedDateHint").textContent = isSunday(state.date)
+    ? "今天是周日：先记录当天，也可以展开下方的小结，统一回看这一周。"
+    : "分别写下双方所见，再让 AI 反馈可观察的互动。";
 }
 
 function fillForm(participantId, data) {
@@ -236,10 +257,9 @@ function fillForm(participantId, data) {
   ["appreciation", "event", "feeling", "need", "response", "repair_request", "follow_up"].forEach((name) => {
     form.elements[name].value = data[name] ?? (name === "follow_up" ? "none" : "");
   });
-  const revision = Number(data.revision || 0);
   setSaveState(
     participantId,
-    data.updated_at ? `已保存 ${formatTime(data.updated_at)} · 修订 ${revision}` : "未保存",
+    data.updated_at ? `已保存 ${formatTime(data.updated_at)} · 修订 ${Number(data.revision || 1)}` : "未保存",
     Boolean(data.updated_at),
   );
 }
@@ -248,7 +268,7 @@ async function saveEntry(event, participantId) {
   event.preventDefault();
   const form = event.currentTarget;
   const payload = {
-    entry_date: $("#datePicker").value,
+    entry_date: state.date,
     participant_id: participantId,
     appreciation: form.elements.appreciation.value,
     event: form.elements.event.value,
@@ -265,8 +285,8 @@ async function saveEntry(event, participantId) {
       body: JSON.stringify(payload),
     });
     setSaveState(participantId, `已保存 ${formatTime(saved.updated_at)} · 修订 ${saved.revision}`, true);
+    await refreshMonth({ reloadDay: false });
     showToast(`${PARTICIPANT_BY_ID[participantId].name}的记录已保存`);
-    await loadHistory();
   } catch (error) {
     showToast(error.message || "保存失败");
   }
@@ -275,144 +295,62 @@ async function saveEntry(event, participantId) {
 async function deleteEntry(participantId) {
   const name = PARTICIPANT_BY_ID[participantId].name;
   if (!confirm(`确定清空 ${state.date} ${name}的记录吗？历史修订仍会保留在备份中。`)) return;
-  await fetchJson(`/api/entries/${state.date}/${participantId}`, { method: "DELETE" });
-  fillForm(participantId, await fetchJson(`/api/entries/${state.date}/${participantId}`));
-  await loadHistory();
-  showToast("已清空当天记录");
-}
-
-async function loadHistory() {
-  if (!$("#historyList")) return;
-  const params = new URLSearchParams({ month: state.month });
-  const q = $("#searchInput").value.trim();
-  const followUp = $("#filterFollowUp").value;
-  if (q) params.set("q", q);
-  if (followUp) params.set("follow_up", followUp);
   try {
-    state.history = await fetchJson(`/api/entries?${params}`);
-    renderHistory(state.history);
+    await fetchJson(`/api/entries/${state.date}/${participantId}`, { method: "DELETE" });
+    fillForm(participantId, await fetchJson(`/api/entries/${state.date}/${participantId}`));
+    await refreshMonth({ reloadDay: false });
+    showToast("已清空这一天的记录");
   } catch (error) {
-    $("#historyList").className = "history-list empty-state";
-    $("#historyList").textContent = error.message || "历史记录读取失败";
+    showToast(error.message || "清空失败");
   }
 }
 
-function renderHistory(entries) {
-  $("#historyTitle").textContent = `${state.month} 历史记录`;
-  $("#historyCount").textContent = `${entries.length} 条`;
-  const container = $("#historyList");
-  if (!entries.length) {
-    container.className = "history-list empty-state";
-    container.textContent = "没有匹配的记录。";
+async function loadWeeklySummary() {
+  const section = $("#weeklySummarySection");
+  const disclosure = $("#weeklySummaryDisclosure");
+  const form = $("#weeklyForm");
+  if (!isSunday(state.date)) {
+    section.hidden = true;
+    disclosure.open = false;
+    form.dataset.weekEnd = "";
     return;
   }
-  container.className = "history-list";
-  container.innerHTML = entries.map((entry) => `
-    <article class="history-card">
-      <div class="history-head">
-        <strong>${escapeHtml(entry.entry_date)} · ${escapeHtml(entry.participant?.name || "未命名")}</strong>
-        <span class="category-pill follow-${escapeHtml(entry.follow_up)}">${escapeHtml(FOLLOW_UP_LABELS[entry.follow_up] || entry.follow_up)} · 修订 ${Number(entry.revision || 1)}</span>
-      </div>
-      <div class="history-body">
-        ${historyPair("值得肯定", entry.appreciation)}
-        ${historyPair("关键事件", entry.event)}
-        ${historyPair("感受", entry.feeling)}
-        ${historyPair("需要", entry.need)}
-        ${historyPair("双方回应", entry.response)}
-        ${historyPair("下一步", entry.repair_request)}
-        <button class="button subtle" onclick="openHistoryDate('${entry.entry_date}')">打开这一天</button>
-      </div>
-    </article>
-  `).join("");
+
+  const weekEnd = state.date;
+  const previousWeekEnd = form.dataset.weekEnd;
+  form.dataset.weekEnd = weekEnd;
+  if (previousWeekEnd && previousWeekEnd !== weekEnd) disclosure.open = false;
+  section.hidden = false;
+  $("#weekRange").textContent = `${formatWeekRange(weekEnd)} · 周日统一记录`;
+
+  try {
+    const data = await fetchJson(`/api/weeks/${weekEnd}`);
+    if (form.dataset.weekEnd !== weekEnd) return;
+    fillWeeklyForm(data);
+    await loadAiReview("weekly", weekEnd, "#weeklyAiReviewResult");
+  } catch (error) {
+    $("#weeklyAiReviewResult").className = "ai-review-result error-state";
+    $("#weeklyAiReviewResult").textContent = error.message || "本周小结读取失败";
+  }
 }
 
-function historyPair(label, value) {
-  return `<div class="history-pair"><b>${label}</b><span>${escapeHtml(value || "—")}</span></div>`;
-}
-
-window.openHistoryDate = async function openHistoryDate(entryDate) {
-  $("#datePicker").value = entryDate;
-  state.date = entryDate;
-  await loadDay();
-  activateTab("daily");
-  window.scrollTo({ top: 0, behavior: "smooth" });
-};
-
-async function loadWeeks() {
-  const existing = await fetchJson(`/api/weeks?month=${encodeURIComponent(state.month)}`);
-  const byWeek = Object.fromEntries(existing.map((item) => [item.week_no, item]));
-  const grid = $("#weeklyGrid");
-  if (!grid) return;
-  const activeWeek = currentWeekForMonth();
-  grid.innerHTML = `
-    <nav class="section-tabs week-section-tabs" aria-label="选择周次" role="tablist">
-      ${[1, 2, 3, 4, 5].map((week) => `<button class="section-tab ${week === activeWeek ? "active" : ""}" type="button" data-week-view="${week}" role="tab" aria-selected="${week === activeWeek}">第 ${week} 周</button>`).join("")}
-    </nav>
-    ${[1, 2, 3, 4, 5].map((week) => weekForm(week, byWeek[week] || {}, week === activeWeek)).join("")}
-  `;
-  $$('[data-week-view]', grid).forEach((button) => {
-    button.addEventListener("click", () => activateWeekView(Number(button.dataset.weekView), grid));
+function fillWeeklyForm(data) {
+  const form = $("#weeklyForm");
+  ["highlights", "recurring_pattern", "observed_adjustment", "participant_signals", "next_focus"].forEach((name) => {
+    form.elements[name].value = data[name] || "";
   });
-  $$(".week-form", grid).forEach((form) => form.addEventListener("submit", saveWeek));
-  $$('[data-ai-week]', grid).forEach((button) => {
-    const week = Number(button.dataset.aiWeek);
-    button.addEventListener("click", () => {
-      generateAiReview("weekly", `${state.month}-W${week}`, `[data-week-review="${week}"]`, button);
-    });
-  });
-  await Promise.all([1, 2, 3, 4, 5].map((week) => (
-    loadAiReview("weekly", `${state.month}-W${week}`, `[data-week-review="${week}"]`)
-  )));
-}
-
-function currentWeekForMonth() {
-  const current = state.date.startsWith(state.month) ? Number(state.date.slice(8, 10)) : 1;
-  return Math.min(5, Math.max(1, Math.floor((current - 1) / 7) + 1));
-}
-
-function activateWeekView(week, root) {
-  $$('[data-week-view]', root).forEach((button) => {
-    const active = Number(button.dataset.weekView) === week;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", String(active));
-  });
-  $$('[data-week-panel]', root).forEach((panel) => {
-    const active = Number(panel.dataset.weekPanel) === week;
-    panel.classList.toggle("active", active);
-    panel.hidden = !active;
-  });
-}
-
-function weekForm(week, data, active) {
-  return `
-    <form class="panel week-form compact-tab-panel ${active ? "active" : ""}" data-week="${week}" data-week-panel="${week}" ${active ? "" : "hidden"}>
-      <div class="panel-heading">
-        <div><span class="eyebrow">${state.month}</span><h3>第 ${week} 周小结</h3></div>
-        <span class="save-state">${data.updated_at ? `已保存 ${formatTime(data.updated_at)} · 修订 ${Number(data.revision || 1)}` : "未保存"}</span>
-      </div>
-      <div class="week-fields">
-        <label>本周值得保留的时刻<textarea name="highlights" rows="3">${escapeHtml(data.highlights || "")}</textarea></label>
-        <label>重复出现的互动模式<textarea name="recurring_pattern" rows="3">${escapeHtml(data.recurring_pattern || "")}</textarea></label>
-        <label>本周出现的觉察或调整<textarea name="observed_adjustment" rows="3">${escapeHtml(data.observed_adjustment || "")}</textarea></label>
-        <label>看见小娌与小元各自的努力或需要<textarea name="participant_signals" rows="3">${escapeHtml(data.participant_signals || "")}</textarea></label>
-        <label>下周唯一关注点<textarea name="next_focus" rows="3" placeholder="只写一个重点">${escapeHtml(data.next_focus || "")}</textarea></label>
-      </div>
-      <div class="form-actions">
-        <button class="button subtle" type="button" data-ai-week="${week}">生成本周 AI 反馈</button>
-        <button class="button primary" type="submit">保存第 ${week} 周</button>
-      </div>
-      <div class="ai-review-result empty-state" data-week-review="${week}">还没有生成本周复盘</div>
-    </form>
-  `;
+  const saveState = $("#weeklySaveState");
+  saveState.textContent = data.updated_at ? `已保存 ${formatTime(data.updated_at)} · 修订 ${Number(data.revision || 1)}` : "未保存";
+  saveState.classList.toggle("saved", Boolean(data.updated_at));
 }
 
 async function saveWeek(event) {
   event.preventDefault();
   const form = event.currentTarget;
-  const weekNo = Number(form.dataset.week);
+  const weekEnd = form.dataset.weekEnd;
+  if (!weekEnd || !isSunday(weekEnd)) return;
   const payload = {
-    month_key: state.month,
-    week_no: weekNo,
+    week_end: weekEnd,
     highlights: form.elements.highlights.value,
     recurring_pattern: form.elements.recurring_pattern.value,
     observed_adjustment: form.elements.observed_adjustment.value,
@@ -425,25 +363,36 @@ async function saveWeek(event) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    $(".save-state", form).textContent = `已保存 ${formatTime(saved.updated_at)} · 修订 ${saved.revision}`;
-    $(".save-state", form).classList.add("saved");
-    showToast(`第 ${weekNo} 周小结已保存`);
+    fillWeeklyForm(saved);
+    await refreshMonth({ reloadDay: false });
+    showToast("本周小结已保存");
   } catch (error) {
-    showToast(error.message || "每周小结保存失败");
+    showToast(error.message || "本周小结保存失败");
   }
 }
 
+async function openMonthlySummary() {
+  const section = $("#monthlySummarySection");
+  section.hidden = false;
+  $("#monthlyPeriodLabel").textContent = formatMonth(state.month);
+  await loadMonthlySummary();
+  section.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 async function loadMonthlySummary() {
-  const data = await fetchJson(`/api/monthly-summary?month=${encodeURIComponent(state.month)}`);
-  const form = $("#monthlyForm");
-  if (!form) return;
-  ["overall_change", "what_helped", "recurring_patterns", "needs_attention", "next_focus"].forEach((name) => {
-    form.elements[name].value = data[name] || "";
-  });
-  const el = $("#monthlySaveState");
-  el.textContent = data.updated_at ? `已保存 ${formatTime(data.updated_at)} · 修订 ${Number(data.revision || 1)}` : "未保存";
-  el.classList.toggle("saved", Boolean(data.updated_at));
-  await loadAiReview("monthly", state.month, "#monthlyAiReviewResult");
+  const section = $("#monthlySummarySection");
+  if (section.hidden) return;
+  try {
+    const data = await fetchJson(`/api/monthly-summary?month=${encodeURIComponent(state.month)}`);
+    const form = $("#monthlyForm");
+    ["overall_change", "what_helped", "recurring_patterns", "needs_attention", "next_focus"].forEach((name) => {
+      form.elements[name].value = data[name] || "";
+    });
+    await loadAiReview("monthly", state.month, "#monthlyAiReviewResult");
+  } catch (error) {
+    $("#monthlyAiReviewResult").className = "ai-review-result error-state";
+    $("#monthlyAiReviewResult").textContent = error.message || "月度复盘读取失败";
+  }
 }
 
 async function saveMonthlySummary(event) {
@@ -458,14 +407,12 @@ async function saveMonthlySummary(event) {
     next_focus: form.elements.next_focus.value,
   };
   try {
-    const saved = await fetchJson("/api/monthly-summary", {
+    await fetchJson("/api/monthly-summary", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const el = $("#monthlySaveState");
-    el.textContent = `已保存 ${formatTime(saved.updated_at)} · 修订 ${saved.revision}`;
-    el.classList.add("saved");
+    await refreshMonth({ reloadDay: false });
     showToast("月度复盘已保存");
   } catch (error) {
     showToast(error.message || "月度复盘保存失败");
@@ -474,7 +421,7 @@ async function saveMonthlySummary(event) {
 
 async function generateAiReview(periodType, periodKey, targetSelector, button) {
   const target = $(targetSelector);
-  if (!target || button.disabled) return;
+  if (!target || !button || button.disabled) return;
   const originalText = button.textContent;
   button.disabled = true;
   button.textContent = "分析中……";
@@ -487,10 +434,11 @@ async function generateAiReview(periodType, periodKey, targetSelector, button) {
       body: JSON.stringify({
         period_type: periodType,
         period_key: periodKey,
-        model: $("#reviewModel")?.value || "",
+        model: localStorage.getItem(MODEL_STORAGE_KEY) || "",
       }),
     });
     renderAiReview(review, target);
+    await refreshMonth({ reloadDay: false });
     showToast("AI 复盘已保存，调整目标已进入行动清单");
   } catch (error) {
     target.className = "ai-review-result error-state";
@@ -510,7 +458,7 @@ async function loadAiReview(periodType, periodKey, targetSelector) {
     if (review.id) renderAiReview(review, target);
     else {
       target.className = "ai-review-result empty-state";
-      target.textContent = periodType === "daily" ? "还没有生成今日复盘" : periodType === "weekly" ? "还没有生成本周复盘" : "还没有生成月度复盘";
+      target.textContent = periodType === "daily" ? "还没有生成当日复盘" : periodType === "weekly" ? "还没有生成本周复盘" : "还没有生成月度复盘";
     }
   } catch (error) {
     target.className = "ai-review-result error-state";
@@ -564,14 +512,66 @@ async function fetchJson(url, options = {}) {
 
 function showToast(message) {
   const toast = $("#toast");
+  if (!toast) return;
   toast.textContent = message;
   toast.classList.add("show");
   clearTimeout(showToast.timer);
   showToast.timer = setTimeout(() => toast.classList.remove("show"), 2400);
 }
 
-function currentMonth() {
-  return localDateString(new Date()).slice(0, 7);
+function isMonthKey(value) {
+  return /^\d{4}-\d{2}$/.test(String(value || "")) && daysInMonth(String(value)) > 0;
+}
+
+function isDateInMonth(value, month) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) && String(value).startsWith(`${month}-`) && Boolean(dateFromIso(value));
+}
+
+function isSunday(value) {
+  const item = dateFromIso(value);
+  return Boolean(item) && item.getDay() === 0;
+}
+
+function daysInMonth(month) {
+  const match = /^(\d{4})-(\d{2})$/.exec(String(month || ""));
+  if (!match) return 0;
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]);
+  if (monthIndex < 1 || monthIndex > 12) return 0;
+  return new Date(year, monthIndex, 0, 12).getDate();
+}
+
+function dateFromIso(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
+  if (!match) return null;
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]);
+  const day = Number(match[3]);
+  const result = new Date(year, monthIndex - 1, day, 12);
+  return result.getFullYear() === year && result.getMonth() === monthIndex - 1 && result.getDate() === day ? result : null;
+}
+
+function formatMonth(month) {
+  const [year, monthNumber] = String(month).split("-").map(Number);
+  return `${year}年${monthNumber}月`;
+}
+
+function formatDateTitle(value) {
+  const item = dateFromIso(value);
+  if (!item) return String(value || "");
+  return `${item.getFullYear()}年${item.getMonth() + 1}月${item.getDate()}日 · ${WEEKDAY_NAMES[item.getDay()]}`;
+}
+
+function formatWeekRange(weekEnd) {
+  const end = dateFromIso(weekEnd);
+  if (!end) return "本周";
+  const start = new Date(end);
+  start.setDate(start.getDate() - 6);
+  const startLabel = `${start.getFullYear()}年${start.getMonth() + 1}月${start.getDate()}日`;
+  const endLabel = start.getFullYear() === end.getFullYear() && start.getMonth() === end.getMonth()
+    ? `${end.getDate()}日`
+    : `${end.getFullYear()}年${end.getMonth() + 1}月${end.getDate()}日`;
+  return `${startLabel}—${endLabel}`;
 }
 
 function localDateString(date) {

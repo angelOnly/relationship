@@ -55,7 +55,7 @@ from relationship_ai import (
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 DB_PATH = DATA_DIR / "relationship.db"
-APP_VERSION = os.getenv("APP_VERSION", "4.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "4.1.0")
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
@@ -536,49 +536,144 @@ def delete_entry(entry_date: str, participant_key: str):
     return jsonify({"ok": True, "deleted": deleted})
 
 
+@app.get("/api/calendar")
+def get_calendar_overview():
+    month = clean_text(request.args.get("month"))
+    bounds = month_bounds(month)
+    if bounds is None:
+        return jsonify({"error": "month must be YYYY-MM"}), 400
+    start_date, end_date = bounds
+    with closing(get_conn()) as conn:
+        daily_records = list_records(
+            conn,
+            "daily",
+            date_from=start_date.isoformat(),
+            date_to=end_date.isoformat(),
+        )
+        weekly_records = list_records(
+            conn,
+            "weekly",
+            author=JOINT_NAME,
+            date_from=start_date.isoformat(),
+            date_to=end_date.isoformat(),
+        )
+        daily_reviews = conn.execute(
+            """
+            SELECT period_key, updated_at FROM period_reviews
+            WHERE period_type = 'daily' AND period_key >= ? AND period_key <= ?
+            """,
+            (start_date.isoformat(), end_date.isoformat()),
+        ).fetchall()
+        monthly_record = get_record(conn, "monthly", month, JOINT_NAME)
+        monthly_review = conn.execute(
+            "SELECT updated_at FROM period_reviews WHERE period_type = 'monthly' AND period_key = ?",
+            (month,),
+        ).fetchone()
+
+    days: dict[str, dict[str, Any]] = {}
+    for record in daily_records:
+        participant = participant_ref(record.get("author"))
+        if participant is None:
+            continue
+        entry_date = clean_text(record.get("period_key"))
+        item = days.setdefault(entry_date, {"participants": [], "daily_review": False})
+        if participant["id"] not in item["participants"]:
+            item["participants"].append(participant["id"])
+
+    for row in daily_reviews:
+        entry_date = clean_text(row["period_key"])
+        item = days.setdefault(entry_date, {"participants": [], "daily_review": False})
+        item["daily_review"] = True
+
+    weeks = {
+        clean_text(record.get("period_key")): {
+            "updated_at": record.get("updated_at", ""),
+            "revision": record.get("revision", 0),
+        }
+        for record in weekly_records
+        if valid_period_key("weekly", clean_text(record.get("period_key")))
+    }
+    return jsonify(
+        {
+            "month": month,
+            "days": days,
+            "weeks": weeks,
+            "monthly_summary": {
+                "exists": bool(monthly_record),
+                "updated_at": monthly_record.get("updated_at", "") if monthly_record else "",
+            },
+            "monthly_review": {
+                "exists": bool(monthly_review),
+                "updated_at": monthly_review["updated_at"] if monthly_review else "",
+            },
+        }
+    )
+
+
 @app.get("/api/weeks")
 def list_weeks():
     month = clean_text(request.args.get("month"))
-    if not month:
-        return jsonify([])
+    bounds = month_bounds(month)
+    if bounds is None:
+        return jsonify({"error": "month must be YYYY-MM"}), 400
+    start_date, end_date = bounds
     with closing(get_conn()) as conn:
-        records = list_records(conn, "weekly", period_prefix=f"{month}-W")
-    weeks = [weekly_record_to_api(record) for record in records]
-    weeks.sort(key=lambda item: item["week_no"])
+        records = list_records(
+            conn,
+            "weekly",
+            author=JOINT_NAME,
+            date_from=start_date.isoformat(),
+            date_to=end_date.isoformat(),
+        )
+    weeks = [
+        weekly_record_to_api(record)
+        for record in records
+        if valid_period_key("weekly", clean_text(record.get("period_key")))
+    ]
+    weeks.sort(key=lambda item: item["week_end"])
     return jsonify(weeks)
+
+
+@app.get("/api/weeks/<week_end>")
+def get_week(week_end: str):
+    if not valid_period_key("weekly", week_end):
+        return jsonify({"error": "week_end 必须是周日，格式为 YYYY-MM-DD。"}), 400
+    with closing(get_conn()) as conn:
+        record = get_record(conn, "weekly", week_end, JOINT_NAME)
+    return jsonify(weekly_record_to_api(record) if record else empty_weekly_record(week_end))
 
 
 @app.post("/api/weeks")
 def save_week():
     data = request.get_json(silent=True) or {}
-    month_key = clean_text(data.get("month_key"))
-    try:
-        week_no = int(data.get("week_no", 0) or 0)
-    except (TypeError, ValueError):
-        week_no = 0
-    try:
-        datetime.strptime(month_key, "%Y-%m")
-    except ValueError:
-        return jsonify({"error": "month_key must be YYYY-MM"}), 400
-    if not 1 <= week_no <= 6:
-        return jsonify({"error": "week_no must be 1-6"}), 400
+    week_end = clean_text(data.get("week_end"))
+    week_dates = week_range_for_end(week_end)
+    if week_dates is None:
+        return jsonify({"error": "week_end 必须是周日，格式为 YYYY-MM-DD。"}), 400
+    start_date, end_date = week_dates
     content = normalize_weekly_content(data)
     with closing(get_conn()) as conn:
         record = upsert_record(
             conn,
             record_type="weekly",
-            period_key=f"{month_key}-W{week_no}",
+            period_key=week_end,
             author=JOINT_NAME,
             data=content,
-            metadata={"source": "web", "format": "universal"},
+            metadata={
+                "source": "web",
+                "format": "universal",
+                "week_start": start_date.isoformat(),
+                "week_end": end_date.isoformat(),
+            },
         )
         conn.commit()
     return jsonify(weekly_record_to_api(record))
 
-
 @app.get("/api/monthly-summary")
 def get_monthly_summary():
     month = clean_text(request.args.get("month"))
+    if month_bounds(month) is None:
+        return jsonify({"error": "month must be YYYY-MM"}), 400
     with closing(get_conn()) as conn:
         record = get_record(conn, "monthly", month, JOINT_NAME)
     return jsonify(monthly_record_to_api(record) if record else empty_monthly_record(month))
@@ -588,9 +683,7 @@ def get_monthly_summary():
 def save_monthly_summary():
     data = request.get_json(silent=True) or {}
     month_key = clean_text(data.get("month_key"))
-    try:
-        datetime.strptime(month_key, "%Y-%m")
-    except ValueError:
+    if month_bounds(month_key) is None:
         return jsonify({"error": "month_key must be YYYY-MM"}), 400
     content = normalize_monthly_content(data)
     with closing(get_conn()) as conn:
@@ -604,7 +697,6 @@ def save_monthly_summary():
         )
         conn.commit()
     return jsonify(monthly_record_to_api(record))
-
 
 @app.get("/api/months")
 def list_months():
@@ -761,7 +853,7 @@ def backup_json():
             for row in conn.execute("SELECT * FROM period_reviews ORDER BY period_type, period_key")
         ]
     payload = {
-        "version": 4,
+        "version": 5,
         "app_version": APP_VERSION,
         "exported_at": datetime.now().isoformat(timespec="seconds"),
         "participants": [dict(item) for item in PARTICIPANTS],
@@ -809,6 +901,7 @@ def health():
                 "flexible_records": True,
                 "dynamic_actions": True,
                 "participant_arrays": True,
+                "calendar_journal": True,
             },
         }
     )
@@ -830,18 +923,35 @@ def valid_period_key(period_type: str, period_key: str) -> bool:
             datetime.strptime(period_key, "%Y-%m-%d")
             return True
         if period_type == "monthly":
-            datetime.strptime(period_key, "%Y-%m")
-            return True
+            return month_bounds(period_key) is not None
         if period_type == "weekly":
-            match = re.fullmatch(r"(\d{4}-\d{2})-W([1-6])", period_key)
-            if not match:
-                return False
-            datetime.strptime(match.group(1), "%Y-%m")
-            return True
+            return week_range_for_end(period_key) is not None
     except ValueError:
         return False
     return False
 
+
+def month_bounds(month_key: str) -> tuple[date, date] | None:
+    if not re.fullmatch(r"\d{4}-\d{2}", month_key):
+        return None
+    try:
+        year, month = map(int, month_key.split("-"))
+        start_date = date(year, month, 1)
+    except ValueError:
+        return None
+    return start_date, date(year, month, calendar.monthrange(year, month)[1])
+
+
+def week_range_for_end(week_end: str) -> tuple[date, date] | None:
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", week_end):
+        return None
+    try:
+        end_date = date.fromisoformat(week_end)
+    except ValueError:
+        return None
+    if end_date.weekday() != 6:
+        return None
+    return end_date - timedelta(days=6), end_date
 
 def build_period_source(period_type: str, period_key: str) -> dict[str, Any]:
     source: dict[str, Any] = {"period_type": period_type, "period_key": period_key}
@@ -856,24 +966,15 @@ def build_period_source(period_type: str, period_key: str) -> dict[str, Any]:
                 entry_for_ai_review(daily_record_to_api(record)) for record in entries
             ]
         elif period_type == "weekly":
-            match = re.fullmatch(r"(\d{4})-(\d{2})-W([1-6])", period_key)
-            assert match is not None
-            year, month, week_no = map(int, match.groups())
-            days_in_month = calendar.monthrange(year, month)[1]
-            start_day = (week_no - 1) * 7 + 1
-            if start_day <= days_in_month:
-                start_date = date(year, month, start_day)
-                end_date = date(year, month, min(start_day + 6, days_in_month))
-                entries = list_records(
-                    conn,
-                    "daily",
-                    date_from=start_date.isoformat(),
-                    date_to=end_date.isoformat(),
-                )
-            else:
-                start_date = date(year, month, days_in_month)
-                end_date = start_date
-                entries = []
+            week_dates = week_range_for_end(period_key)
+            assert week_dates is not None
+            start_date, end_date = week_dates
+            entries = list_records(
+                conn,
+                "daily",
+                date_from=start_date.isoformat(),
+                date_to=end_date.isoformat(),
+            )
             summary = get_record(conn, "weekly", period_key, JOINT_NAME)
             source.update(
                 {
@@ -886,7 +987,16 @@ def build_period_source(period_type: str, period_key: str) -> dict[str, Any]:
             )
         else:
             entries = list_records(conn, "daily", period_prefix=period_key)
-            weeks = list_records(conn, "weekly", period_prefix=f"{period_key}-W")
+            month_dates = month_bounds(period_key)
+            assert month_dates is not None
+            month_start, month_end = month_dates
+            weeks = list_records(
+                conn,
+                "weekly",
+                author=JOINT_NAME,
+                date_from=month_start.isoformat(),
+                date_to=month_end.isoformat(),
+            )
             month = get_record(conn, "monthly", period_key, JOINT_NAME)
             analyses = conn.execute(
                 """
@@ -1435,13 +1545,14 @@ def normalize_weekly_content(data: dict[str, Any]) -> dict[str, str]:
 
 def weekly_record_to_api(record: dict[str, Any]) -> dict[str, Any]:
     data = record.get("data", {})
-    period_key = clean_text(record.get("period_key"))
-    match = re.fullmatch(r"(\d{4}-\d{2})-W([1-6])", period_key)
-    month_key, week_no = (match.group(1), int(match.group(2))) if match else (period_key[:7], 0)
+    week_end = clean_text(record.get("period_key"))
+    week_dates = week_range_for_end(week_end)
+    week_start = week_dates[0].isoformat() if week_dates else ""
     result = {
         "id": record.get("id"),
-        "month_key": month_key,
-        "week_no": week_no,
+        "week_end": week_end,
+        "week_start": week_start,
+        "month_key": week_end[:7],
         "highlights": clean_text(data.get("highlights")),
         "recurring_pattern": clean_text(data.get("recurring_pattern")),
         "observed_adjustment": clean_text(data.get("observed_adjustment")),
@@ -1455,6 +1566,17 @@ def weekly_record_to_api(record: dict[str, Any]) -> dict[str, Any]:
     }
     return result
 
+
+def empty_weekly_record(week_end: str) -> dict[str, Any]:
+    return weekly_record_to_api(
+        {
+            "period_key": week_end,
+            "data": {},
+            "schema_key": RECORD_SCHEMAS["weekly"]["key"],
+            "schema_version": RECORD_SCHEMAS["weekly"]["version"],
+            "revision": 0,
+        }
+    )
 
 def normalize_monthly_content(data: dict[str, Any]) -> dict[str, str]:
     return {
