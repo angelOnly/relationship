@@ -2,6 +2,7 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 const MODEL_STORAGE_KEY = "relationship-ai-model-v1";
+const CALENDAR_COLLAPSED_STORAGE_KEY = "relationship-journal-calendar-collapsed-v1";
 const PARTICIPANTS = [
   { id: "xiaoli", name: "小娌", formId: "#xiaoliForm", stateId: "#xiaoliSaveState" },
   { id: "xiaoyuan", name: "小元", formId: "#xiaoyuanForm", stateId: "#xiaoyuanSaveState" },
@@ -49,6 +50,35 @@ function setupCalendarControls() {
   $("#closeMonthlySummary").addEventListener("click", () => {
     $("#monthlySummarySection").hidden = true;
   });
+  $("#toggleCalendar").addEventListener("click", () => {
+    setCalendarCollapsed(!$("#calendarPanel").classList.contains("is-collapsed"));
+  });
+  setCalendarCollapsed(readCalendarCollapsedPreference(), { persist: false });
+}
+
+function readCalendarCollapsedPreference() {
+  try {
+    return window.localStorage.getItem(CALENDAR_COLLAPSED_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function setCalendarCollapsed(collapsed, { persist = true } = {}) {
+  const panel = $("#calendarPanel");
+  const toggle = $("#toggleCalendar");
+  if (!panel || !toggle) return;
+
+  panel.classList.toggle("is-collapsed", collapsed);
+  toggle.setAttribute("aria-expanded", String(!collapsed));
+  $("#calendarToggleLabel").textContent = collapsed ? "展开日历" : "收起日历";
+
+  if (!persist) return;
+  try {
+    window.localStorage.setItem(CALENDAR_COLLAPSED_STORAGE_KEY, String(collapsed));
+  } catch {
+    // Private browsing or browser settings may prevent saving this display preference.
+  }
 }
 
 function setupDayWorkspace() {
@@ -222,6 +252,9 @@ async function selectDate(entryDate, shouldScroll = false) {
   if (!isDateInMonth(entryDate, state.month)) return;
   state.date = entryDate;
   renderCalendar();
+  if (shouldScroll && window.matchMedia("(max-width: 660px)").matches) {
+    setCalendarCollapsed(true);
+  }
   await loadDay();
   if (shouldScroll) {
     $("#dayWorkspace").scrollIntoView({ behavior: "smooth", block: "start" });

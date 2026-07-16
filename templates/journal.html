@@ -70,22 +70,30 @@
   </div>
 </section>
 
-<section class="panel calendar-panel" aria-label="每月记录日历">
+<section class="panel calendar-panel" id="calendarPanel" aria-label="每月记录日历">
   <div class="calendar-panel-heading">
     <div>
       <span class="eyebrow" id="calendarMonthLabel">{{ today[:7] }}</span>
       <p id="calendarStatus" class="calendar-status">选择一天，开始记录或补记。</p>
     </div>
-    <div class="calendar-legend" aria-label="记录状态说明">
-      <span><i class="calendar-dot xiaoli-dot"></i>小娌</span>
-      <span><i class="calendar-dot xiaoyuan-dot"></i>小元</span>
-      <span><i class="calendar-dot review-dot"></i>AI</span>
+    <div class="calendar-panel-actions">
+      <div class="calendar-legend" aria-label="记录状态说明">
+        <span><i class="calendar-dot xiaoli-dot"></i>小娌</span>
+        <span><i class="calendar-dot xiaoyuan-dot"></i>小元</span>
+        <span><i class="calendar-dot review-dot"></i>AI</span>
+      </div>
+      <button class="button subtle calendar-toggle" id="toggleCalendar" type="button" aria-controls="calendarContent" aria-expanded="true">
+        <span id="calendarToggleLabel">收起日历</span>
+        <span class="calendar-toggle-icon" aria-hidden="true">⌃</span>
+      </button>
     </div>
   </div>
-  <div class="calendar-weekdays" aria-hidden="true">
-    <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+  <div class="calendar-panel-content" id="calendarContent">
+    <div class="calendar-weekdays" aria-hidden="true">
+      <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+    </div>
+    <div class="calendar-grid" id="calendarGrid" aria-live="polite"></div>
   </div>
-  <div class="calendar-grid" id="calendarGrid" aria-live="polite"></div>
 </section>
 
 <section class="selected-day-workspace" id="dayWorkspace" tabindex="-1">
